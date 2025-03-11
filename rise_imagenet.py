@@ -9,14 +9,14 @@ from pathlib import Path
 import dianna
 from dianna import visualization
 import cv2
-from cv2 import INTER_NEAREST  # Explicitly import the constant
+from cv2 import INTER_NEAREST
 from skimage import io, color
 from tqdm import tqdm
 import scipy.stats
 import matplotlib.pyplot as plt
 
 # Custom RISE implementation to ensure dimension compatibility
-def custom_rise(model_fn, image, n_masks=10, p_keep=0.1, feature_res=6):
+def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
     """Custom RISE implementation that ensures dimension compatibility"""
     
     # Create masks for RISE
@@ -103,8 +103,8 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.1, feature_res=6):
 
 def explain_painting(
         image_path: Path = Path('data/0_Edinburgh_Nat_Gallery.jpg'),
-        p_keep: float = 0.1,
-        n_masks: int = 10,
+        p_keep: float = 0.5,
+        n_masks: int = 50,
         feature_res: int = 6,
         file_name_appendix: Optional[str] = None,
 ):
@@ -273,7 +273,7 @@ def calculate_clarity_metrics(relevance_maps):
     
     return metrics
 
-def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
+def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
     """
     Integrate results from multiple runs to create more robust explanations.
     
@@ -563,8 +563,8 @@ if __name__ == "__main__":
         
         for painting_path in painting_paths:
             for n_masks in [50]:  # Using 500 masks for more stable results
-                for p_keep in [0.7]: # verhouding mask vs non-mask pixels                    
-                    for feature_res in [12]: # als je maskeert, wil je groepen maskeren die naast gelegen zijn
+                for p_keep in [0.5]: # verhouding mask vs non-mask pixels                    
+                    for feature_res in [6]: # als je maskeert, wil je groepen maskeren die naast gelegen zijn
                         for run in range(5):
                             print(f'Running {run} of {painting_path} with {n_masks} masks, {p_keep} keep ratio, and {feature_res} feature resolution')
                             # heatmaps for the painting indicating the relevance of each pixel for the prediction
@@ -577,4 +577,4 @@ if __name__ == "__main__":
         # After running all the individual analyses
         for painting_path in painting_paths:
             print(f"Integrating results for {painting_path}")
-            integrate_results(image_path=painting_path, n_masks=50, p_keep=0.7, feature_res=12, runs=5)
+            integrate_results(image_path=painting_path, n_masks=50, p_keep=0.5, feature_res=6, runs=5)
