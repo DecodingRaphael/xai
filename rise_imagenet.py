@@ -6,14 +6,14 @@ from model import Model
 import numpy as np
 from pathlib import Path
 #from keras import utils
-#import dianna
+import dianna
 from dianna import visualization
 import cv2
+from cv2 import INTER_NEAREST  # Explicitly import the constant
 from skimage import io, color
 from tqdm import tqdm
 import scipy.stats
 import matplotlib.pyplot as plt
-
 
 # Custom RISE implementation to ensure dimension compatibility
 def custom_rise(model_fn, image, n_masks=10, p_keep=0.1, feature_res=6):
@@ -101,8 +101,6 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.1, feature_res=6):
     
     return saliency
 
-
-# for plotting
 def explain_painting(
         image_path: Path = Path('data/0_Edinburgh_Nat_Gallery.jpg'),
         p_keep: float = 0.1,
@@ -115,7 +113,7 @@ def explain_painting(
     
     file_name_base = create_file_name_base(feature_res, file_name_appendix, image_path, n_masks, p_keep)      
     
-    # Load image with scikit-image instead of cv2 for consistent RGB format
+    # Load image with scikit-image for consistent RGB format
     x = io.imread(str(image_path))
     
     # Convert to RGB if it has an alpha channel
@@ -276,6 +274,37 @@ def calculate_clarity_metrics(relevance_maps):
     return metrics
 
 def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
+    """
+    Integrate results from multiple runs to create more robust explanations.
+    
+    This function:
+    1. Finds all relevance maps matching the specified parameters
+    2. Calculates mean and standard deviation across runs
+    3. Creates visualizations including:
+       - Mean relevance maps for each class
+       - Standard deviation maps showing uncertainty
+       - Confidence maps (high relevance + low variability)
+       - Difference maps between Raphael and non-Raphael features
+    4. Calculates integrated metrics and provides interpretation
+    
+    The integrated results will be saved in:
+    - output/integrated/[filename]_integrated.npz: Raw data
+    - output/integrated/visualizations/: Visual explanations
+    - output/integrated/[filename]_integrated_metrics.csv: Aggregated metrics
+    
+    Parameters:
+    -----------
+    image_path : Path
+        Path to the image being analyzed
+    n_masks : int
+        Number of masks used in the RISE analysis
+    p_keep : float
+        Proportion of pixels kept in each mask
+    feature_res : int
+        Resolution of the features in masks
+    runs : int
+        Number of runs to integrate
+    """
     # Create output directory for integrated results
     output_dir = Path("output/integrated")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -339,9 +368,7 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
     print(f"Integrated results saved to {str(output_base)}_integrated.npz")
     
     # Load the original image for visualization
-    try:
-        import matplotlib.pyplot as plt
-        from skimage import io
+    try:        
         
         # Load original image
         x = io.imread(str(image_path))
@@ -501,6 +528,18 @@ if __name__ == "__main__":
     # set to True to test. If correct, set to false asnd run real analysis
     is_classification_run = False
     
+    # Verify data paths exist
+    painting_paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
+    for path in painting_paths:
+        if not path.exists():
+            print(f"WARNING: Image file {path} does not exist. Please check the path.")
+            exit(1)
+            
+    # Check Non-Raphael directory exists
+    if not Path('data/Not Raphael').exists():
+        print(f"WARNING: Directory 'data/Not Raphael' does not exist. Please check the path.")
+        exit(1)
+    
     if is_classification_run:
         paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
         
@@ -523,7 +562,7 @@ if __name__ == "__main__":
         painting_paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
         
         for painting_path in painting_paths:
-            for n_masks in [5]:  #5000 wanneer code correct; results are then more stable. start with 500, when the image does not change, 500 would be enough                 
+            for n_masks in [50]:  # Using 500 masks for more stable results
                 for p_keep in [0.7]: # verhouding mask vs non-mask pixels                    
                     for feature_res in [12]: # als je maskeert, wil je groepen maskeren die naast gelegen zijn
                         for run in range(5):
@@ -538,4 +577,4 @@ if __name__ == "__main__":
         # After running all the individual analyses
         for painting_path in painting_paths:
             print(f"Integrating results for {painting_path}")
-            integrate_results(image_path=painting_path, n_masks=5, p_keep=0.7, feature_res=12, runs=3)
+            integrate_results(image_path=painting_path, n_masks=50, p_keep=0.7, feature_res=12, runs=5)

@@ -66,7 +66,7 @@ class Model:
         print(f"Final shape before prediction: {x.shape}")
         
         # Get raw predictions
-        predictions = compare_image_with_dataset(x, '../data/Not Rapheal/')
+        predictions = compare_image_with_dataset(x, 'data/Not Raphael/')
         print(f"Raw predictions: {predictions}")
         
         # Ensure predictions are in the format DIANNA expects: [batch_size, num_classes]
@@ -319,8 +319,7 @@ def compare_image_with_dataset(test_image_path, image_dir):
 
 
 @cache.memoize()
-def load_image_and_calculate_features(image_path):    
-    image = io.imread(image_path)    
-    # Calculate features of image
+def load_image_and_calculate_features(image_path):
+    image = io.imread(image_path)
     image_features = calculate_features(image)
     return image_features
