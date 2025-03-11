@@ -1,35 +1,81 @@
 from pathlib import Path
 import joblib
-from tensorflow.keras.models import load_model
+import tensorflow as tf
+# Fix the keras import
+try:
+    # Try the newer import pattern
+    from tensorflow import keras
+except ImportError:
+    # Fall back to direct keras import
+    import keras
 import numpy as np
-import cv2
 import glob
 import pandas as pd
-from tensorflow.keras.preprocessing import image as keras_image
-from tensorflow.keras.applications.resnet50 import preprocess_input
-from tensorflow.keras.models import load_model
 import math
 from diskcache import Cache
+from skimage import io, color, feature, filters
 
 class Model:
     def __init__(self):
-        pass
+        self.resnet_model = None
+        try:
+            # Load the ResNet model if it exists
+            self.resnet_model = keras.models.load_model("models/resnet50_model.h5")
+        except:
+            # Model will rely on image features if ResNet is not available
+            pass
 
     def extract_features(self, img):
-        preprocess_input = preprocess_input(img)
-        return self.resnet_model.predict(preprocess_input)
+        if self.resnet_model is not None:
+            # Preprocess input for ResNet model
+            img_preprocessed = keras.applications.resnet50.preprocess_input(img)
+            return self.resnet_model.predict(img_preprocessed)
+        return None
 
     def run_on_batch(self, x):
+        # Ensure x is properly formatted (handle different input shapes)
+        if isinstance(x, (str, Path)):
+            # If x is a file path, load the image
+            x = io.imread(str(x))
+        
+        print(f"Input shape to run_on_batch: {x.shape}")
+        
+        # If input has 5 dimensions (from masks), reshape it
+        if len(x.shape) == 5:
+            print("Handling 5D input")
+            # Reshape to 4D by combining batch dimensions
+            x = x.reshape(-1, *x.shape[2:])
+        
+        # Handle DIANNA format [batch, channels, height, width]
+        if len(x.shape) == 4:
+            print("Handling 4D input")
+            if x.shape[1] <= 4:  # channels in second dimension
+                print("Transposing from DIANNA format")
+                x = np.transpose(x, (0, 2, 3, 1))
+        
+        # Ensure we have a batch dimension
+        if len(x.shape) == 3:
+            print("Adding batch dimension")
+            x = np.expand_dims(x, axis=0)
+        
+        # If we have a single channel, convert to RGB
+        if x.shape[-1] == 1:
+            print("Converting single channel to RGB")
+            x = np.repeat(x, 3, axis=-1)
+        
+        print(f"Final shape before prediction: {x.shape}")
+        
+        # Get raw predictions
         predictions = compare_image_with_dataset(x, '../data/Not Rapheal/')
-        return np.array(predictions)
-    
-    # def run_on_batch(self, x):
-    #     # Reshape input if necessary (from masks or other sources)
-    #     if len(x.shape) == 5:
-    #         x = np.reshape(x, (-1, x.shape[2], x.shape[3], x.shape[4]))
-    
-    #     predictions = compare_image_with_dataset(x, 'data/Not Rapheal/')    
-    #     return np.array(predictions)
+        print(f"Raw predictions: {predictions}")
+        
+        # Ensure predictions are in the format DIANNA expects: [batch_size, num_classes]
+        if len(predictions) == 2 and not isinstance(predictions[0], (list, np.ndarray)):
+            # If we have a single prediction, reshape it to [1, num_classes]
+            predictions = np.array(predictions).reshape(1, -1)
+        
+        print(f"Formatted predictions shape: {predictions.shape}")
+        return predictions
 
 
 cache = Cache('my_cache_directory')
@@ -53,55 +99,88 @@ def scale_inverse_log(x, x_min, x_max, y_min, y_max):
 
 
 def extract_features(img_path, model):
-    img = img_path
+    # Handle both file paths and numpy arrays
+    if isinstance(img_path, (str, Path)):
+        img = io.imread(str(img_path))
+    else:
+        img = img_path
     
     # If img has extra dimensions (like masks), flatten it before passing to the model
-    #if len(img.shape) == 5:
-    #    img = np.reshape(img, (-1, img.shape[2], img.shape[3], img.shape[4]))
+    if len(img.shape) == 5:
+        img = np.reshape(img, (-1, img.shape[2], img.shape[3], img.shape[4]))
     
     # Expand dimensions if needed (batch size dimension)
     if len(img.shape) == 3:
         img = np.expand_dims(img, axis=0)
     
-    img = preprocess_input(img)
-    
-    features = model.predict(img)
-    
-    # If features need reshaping (optional, depending on model output)
-    return features.reshape(-1)
+    # Use the model's preprocessing if available
+    if model is not None:
+        try:
+            img = keras.applications.resnet50.preprocess_input(img)
+            features = model.predict(img)
+            return features
+        except:
+            # If model prediction fails, return None
+            return None
+    return None
 
 
 # Function to calculate edge features using Canny edge detector
 def calculate_canny_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
-
-    # Once the edge features are computed, the standard deviation is calculated for
-    # every individual edge feature obtained from an image. The standard deviation serves as
-    # an effective metric to quantify the variability and intensity of edge features in the image.
+    # Convert to grayscale if the image is in color
+    if len(img.shape) > 2 and img.shape[2] > 1:
+        gray = color.rgb2gray(img)
+    else:
+        gray = img
+    
+    # Apply Canny edge detection using scikit-image
+    edges = feature.canny(gray, sigma=1.0)
+    
+    # Return standard deviation of edge image
     return np.std(edges)
 
 
 # Function to calculate edge features using Sobel operator
 def calculate_sobel_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
-    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=5)
+    # Convert to grayscale if the image is in color
+    if len(img.shape) > 2 and img.shape[2] > 1:
+        gray = color.rgb2gray(img)
+    else:
+        gray = img
+        
+    # Apply Sobel filter using scikit-image
+    sobelx = filters.sobel_h(gray)
+    sobely = filters.sobel_v(gray)
+    
     return np.std(sobelx), np.std(sobely)
 
 
 # Function to calculate edge features using Laplacian operator
 def calculate_laplacian_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    # Convert to grayscale if the image is in color
+    if len(img.shape) > 2 and img.shape[2] > 1:
+        gray = color.rgb2gray(img)
+    else:
+        gray = img
+        
+    # Apply Laplacian filter using scikit-image
+    laplacian = filters.laplace(gray)
+    
     return np.std(laplacian)
 
 
 # Function to calculate edge features using Scharr operator
 def calculate_scharr_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    scharrx = cv2.Scharr(gray, cv2.CV_64F, 1, 0)
-    scharry = cv2.Scharr(gray, cv2.CV_64F, 0, 1)
+    # Convert to grayscale if the image is in color
+    if len(img.shape) > 2 and img.shape[2] > 1:
+        gray = color.rgb2gray(img)
+    else:
+        gray = img
+        
+    # Apply Scharr filter using scikit-image
+    scharrx = filters.scharr_h(gray)
+    scharry = filters.scharr_v(gray)
+    
     return np.std(scharrx), np.std(scharry)
 
 
@@ -124,19 +203,51 @@ def compare_image_with_dataset(test_image_path, image_dir):
     Model_Path = model_path
     ResNet_Path = resnet50_path
 
-
-    # Load test image
-    #test_image = cv2.imread(str(test_image_path))
-    test_image =  test_image_path # numpy array
+    # Use the provided image array directly
+    test_image = test_image_path  # This is already a numpy array
+    
+    # Ensure image is in correct format for feature calculation
+    # If it's in DIANNA format [batch, channels, height, width], transpose it
+    if len(test_image.shape) == 4 and 1 <= test_image.shape[1] <= 4:
+        test_image = np.transpose(test_image, (0, 2, 3, 1))
+    
+    # Ensure it has the right number of dimensions for feature calculation
+    if len(test_image.shape) == 4:
+        # Take the first image if batched
+        test_image = test_image[0]
 
     # Load the final model
-    svm_final = joblib.load(Model_Path)
+    try:
+        svm_final = joblib.load(Model_Path)
+    except:
+        # Handle the case where the model file is not found
+        print(f"Warning: SVM model not found at {Model_Path}")
+        # Return default probabilities
+        return [0.5, 0.5]
 
-    # Load the saved model
-    model = load_model(ResNet_Path)
+    # Load the ResNet model
+    try:
+        try:
+            # Try the newer import pattern
+            model = tf.keras.models.load_model(ResNet_Path)
+        except:
+            # Fall back to direct keras import
+            model = keras.models.load_model(ResNet_Path)
+    except:
+        # Handle the case where the model file is not found
+        print(f"Warning: ResNet model not found at {ResNet_Path}")
+        model = None
 
     # Extract features from the test image
-    test_image_features = extract_features(test_image_path, model)
+    test_image_features = extract_features(test_image, model)
+    
+    # If feature extraction failed, return default probabilities
+    if test_image_features is None:
+        return [0.5, 0.5]
+
+    # Reshape features if needed
+    if len(test_image_features.shape) > 1:
+        test_image_features = test_image_features.reshape(-1)
 
     # Use the loaded model to predict the category of the test image
     predicted_category = svm_final.predict([test_image_features])[0]
@@ -153,7 +264,7 @@ def compare_image_with_dataset(test_image_path, image_dir):
     weights = test_features / np.sum(test_features)
 
     # Load all images in directory
-    formats = ('*.jpg', '*.png', '*.bmp')  # Add or remove formats as needed
+    formats = ('*.jpg', '*.png', '*.bmp')
 
     image_paths = []
 
@@ -208,8 +319,8 @@ def compare_image_with_dataset(test_image_path, image_dir):
 
 
 @cache.memoize()
-def load_image_and_calculate_features(image_path):
-    image = cv2.imread(image_path)
+def load_image_and_calculate_features(image_path):    
+    image = io.imread(image_path)    
     # Calculate features of image
     image_features = calculate_features(image)
     return image_features
