@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors
 
 # Custom RISE implementation to ensure dimension compatibility
-def custom_rise(model_fn, image, n_masks=10, p_keep=0.3, feature_res=10):
+def custom_rise(model_fn, image, n_masks=50, p_keep=0.3, feature_res=6):
     """Custom RISE implementation that ensures dimension compatibility"""
     
     # Create masks for RISE
@@ -105,8 +105,8 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.3, feature_res=10):
 def explain_painting(
         image_path: Path = Path('data/0_Edinburgh_Nat_Gallery.jpg'),
         p_keep: float = 0.3,
-        n_masks: int = 100,
-        feature_res: int = 10,
+        n_masks: int = 50,
+        feature_res: int = 6,
         file_name_appendix: Optional[str] = None,
 ):
     model = Model()
@@ -275,8 +275,9 @@ def calculate_clarity_metrics(relevance_maps):
     return metrics
 
 def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enhanced RISE Map", 
-                                  edge_method='sobel', edge_alpha=0.7, heatmap_alpha=0.6, 
-                                  edge_color='white', heatmap_cmap='jet'):
+                                  edge_method='combined', edge_alpha=0.7, heatmap_alpha=0.6, 
+                                  edge_color='white', heatmap_cmap='jet', 
+                                  edge_weights=None):
     """
     Create visualization overlaying RISE heatmaps with edge detection maps to show
     if the model focuses on brushstroke patterns.
@@ -292,7 +293,7 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
     title : str
         Title for the plot
     edge_method : str
-        Edge detection method ('sobel', 'canny', 'laplacian', 'scharr')
+        Edge detection method ('sobel', 'canny', 'laplacian', 'scharr', 'combined')
     edge_alpha : float
         Opacity of edge overlay (0-1)
     heatmap_alpha : float
@@ -301,6 +302,9 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
         Color for edge highlighting
     heatmap_cmap : str
         Colormap for heatmap
+    edge_weights : list or None
+        Weights for combined edge detection [Canny, Sobel, Laplacian, Scharr].
+        Only used when edge_method='combined'. If None, default weights are used.
     """
     # Ensure image is in [0,1] range
     if image.max() > 1.0:
@@ -309,25 +313,82 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
     # Convert to grayscale for edge detection
     gray = color.rgb2gray(image)
     
+    # Initialize default weights for combined method
+    if edge_weights is None and edge_method == 'combined':
+        # Default weights as mentioned in the paper - should be determined experimentally
+        # Setting reasonable defaults with higher weights to Sobel and Scharr which often
+        # better capture brushwork characteristics
+        edge_weights = [0.2, 0.3, 0.2, 0.3]  # [Canny, Sobel, Laplacian, Scharr]
+    
     # Apply the specified edge detection method
     if edge_method == 'canny':
         edges = feature.canny(gray, sigma=1.0)
+        # Convert boolean array to float
+        edges = edges.astype(float)
+        # Normalize to [0,1]
+        if edges.max() > 0:
+            edges = edges / edges.max()
+    
     elif edge_method == 'sobel':
         sobelx = filters.sobel_h(gray)
         sobely = filters.sobel_v(gray)
         edges = np.sqrt(sobelx**2 + sobely**2)
         # Normalize to [0,1]
-        edges = (edges - edges.min()) / (edges.max() - edges.min() + 1e-10)
+        if edges.max() > 0:
+            edges = edges / edges.max()
+    
     elif edge_method == 'laplacian':
         edges = np.abs(filters.laplace(gray))
         # Normalize to [0,1]
-        edges = (edges - edges.min()) / (edges.max() - edges.min() + 1e-10)
+        if edges.max() > 0:
+            edges = edges / edges.max()
+    
     elif edge_method == 'scharr':
         scharrx = filters.scharr_h(gray)
         scharry = filters.scharr_v(gray)
         edges = np.sqrt(scharrx**2 + scharry**2)
         # Normalize to [0,1]
-        edges = (edges - edges.min()) / (edges.max() - edges.min() + 1e-10)
+        if edges.max() > 0:
+            edges = edges / edges.max()
+    
+    elif edge_method == 'combined':
+        # Get all edge maps individually
+        # Canny edges
+        canny_edges = feature.canny(gray, sigma=1.0).astype(float)
+        if canny_edges.max() > 0:
+            canny_edges = canny_edges / canny_edges.max()
+        
+        # Sobel edges
+        sobelx = filters.sobel_h(gray)
+        sobely = filters.sobel_v(gray)
+        sobel_edges = np.sqrt(sobelx**2 + sobely**2)
+        if sobel_edges.max() > 0:
+            sobel_edges = sobel_edges / sobel_edges.max()
+        
+        # Laplacian edges (LoG in the paper)
+        laplacian_edges = np.abs(filters.laplace(gray))
+        if laplacian_edges.max() > 0:
+            laplacian_edges = laplacian_edges / laplacian_edges.max()
+        
+        # Scharr edges
+        scharrx = filters.scharr_h(gray)
+        scharry = filters.scharr_v(gray)
+        scharr_edges = np.sqrt(scharrx**2 + scharry**2)
+        if scharr_edges.max() > 0:
+            scharr_edges = scharr_edges / scharr_edges.max()
+        
+        # Combine using weights: Ecombined = wcannyEcanny + wsobelEsobel + wLoGELoG + wscharrEscharr
+        edges = (
+            edge_weights[0] * canny_edges + 
+            edge_weights[1] * sobel_edges + 
+            edge_weights[2] * laplacian_edges + 
+            edge_weights[3] * scharr_edges
+        )
+        
+        # Normalize the combined result to [0,1]
+        if edges.max() > 0:
+            edges = edges / edges.max()
+    
     else:
         raise ValueError(f"Unsupported edge method: {edge_method}")
     
@@ -361,7 +422,14 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
     
     # Overlay edges on second subplot
     ax2.imshow(edge_overlay)
-    ax2.set_title(f"Edge-Enhanced RISE Map ({edge_method.capitalize()} Edges)")
+    
+    # Update the title to reflect the edge method used
+    if edge_method == 'combined':
+        method_title = "Combined Edges (Canny, Sobel, Laplacian, Scharr)"
+    else:
+        method_title = f"{edge_method.capitalize()} Edges"
+    
+    ax2.set_title(f"Edge-Enhanced RISE Map ({method_title})")
     plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
     ax2.axis('off')
     
@@ -396,7 +464,17 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
         edge_highlight[:, :, i] *= weighted_edges
     
     plt.imshow(edge_highlight, alpha=edge_alpha)
-    plt.title(f"Brushstroke Analysis: RISE Relevance + {edge_method.capitalize()} Edges")
+    
+    # Update the title for the combined visualization
+    if edge_method == 'combined':
+        method_text = "Combined Edge Detection (Canny, Sobel, Laplacian, Scharr)"
+        if edge_weights:
+            weight_text = f" [Weights: C={edge_weights[0]}, S={edge_weights[1]}, L={edge_weights[2]}, Sc={edge_weights[3]}]"
+            method_text += weight_text
+    else:
+        method_text = f"{edge_method.capitalize()} Edge Detection"
+    
+    plt.title(f"Brushstroke Analysis: RISE Relevance + {method_text}")
     plt.axis('off')
     plt.tight_layout()
     
@@ -407,7 +485,7 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
     
     return combined_path
 
-def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
+def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
     """
     Integrate results from multiple runs to create more robust explanations.
     
@@ -669,15 +747,22 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
                 edge_dir.mkdir(exist_ok=True, parents=True)
                 
                 # Generate edge-enhanced visualizations with different edge detection methods
-                for edge_method in ['sobel', 'canny', 'laplacian', 'scharr']:
+                for edge_method in ['combined']:  # Only use combined edge detection
                     output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_{edge_method}_edges.png"
                     try:
+                        # If using combined method, define weights
+                        edge_weights = None
+                        if edge_method == 'combined':
+                            # These weights could be determined experimentally
+                            edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
+                        
                         visualize_edge_heatmap_overlay(
                             image=x, 
                             heatmap=mean_map, 
                             output_path=output_path,
                             title=f"{class_name(class_idx)} Detection: Brushstroke Analysis",
-                            edge_method=edge_method
+                            edge_method=edge_method,
+                            edge_weights=edge_weights
                         )
                         print(f"Created edge-enhanced visualization using {edge_method} for {class_name(class_idx)}")
                     except Exception as edge_err:
@@ -697,18 +782,20 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
                     norm_std = std_map / (np.max(std_map) + 1e-10)
                     confidence_map = mean_map * (1 - norm_std)
                     
-                    # Create edge-enhanced visualization of confidence map with sobel edges
-                    output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_confidence_sobel_edges.png"
+                    # Create edge-enhanced visualization of confidence map with combined edges
+                    output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_confidence_combined_edges.png"
+                    edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
                     visualize_edge_heatmap_overlay(
                         image=x, 
                         heatmap=confidence_map, 
                         output_path=output_path,
                         title=f"{class_name(class_idx)} Detection: Confident Brushstroke Patterns",
-                        edge_method='sobel'  # Sobel is often best for brushstrokes
+                        edge_method='combined',
+                        edge_weights=edge_weights
                     )
-                    print(f"Created edge-enhanced confidence map for {class_name(class_idx)}")
+                    print(f"Created edge-enhanced confidence map with combined edges for {class_name(class_idx)}")
                     
-            # Create edge-enhanced difference map
+            # Create edge-enhanced difference map with various edge detection methods
             if 0 in mean_relevances and 1 in mean_relevances:
                 diff_map_raw = mean_relevances[0][0] - mean_relevances[1][0]
                 # Extract original image region if needed
@@ -720,7 +807,7 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
                 # Normalize to [0,1] range for visualization
                 diff_norm = (diff_map - diff_map.min()) / (diff_map.max() - diff_map.min() + 1e-10)
                 
-                # Create edge-enhanced visualization of difference map with sobel edges
+                # Create edge-enhanced visualization of difference map with sobel edges (keep this for compatibility)
                 output_path = edge_dir / f"{base_pattern}_difference_sobel_edges.png"
                 visualize_edge_heatmap_overlay(
                     image=x, 
@@ -730,7 +817,21 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
                     edge_method='sobel',
                     heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
                 )
-                print("Created edge-enhanced difference map")
+                print("Created edge-enhanced difference map with Sobel edges")
+                
+                # Now create the combined edge version of the difference map
+                output_path = edge_dir / f"{base_pattern}_difference_combined_edges.png"
+                edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
+                visualize_edge_heatmap_overlay(
+                    image=x, 
+                    heatmap=diff_norm, 
+                    output_path=output_path,
+                    title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns (Combined Edge Analysis)",
+                    edge_method='combined',
+                    edge_weights=edge_weights,
+                    heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
+                )
+                print("Created edge-enhanced difference map with combined edges")
         
         except Exception as e:
             print(f"Error creating edge-enhanced visualizations: {e}")
@@ -782,11 +883,11 @@ if __name__ == "__main__":
         painting_paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
         
         for painting_path in painting_paths:
-            for n_masks in [100]:  # Using 500 masks for more stable results
+            for n_masks in [50]:  # Using 500 masks for more stable results
                 for p_keep in [0.3]: # 0.3 means 30% of the pixels are masked, 
                     #which is a good balance between stability and sensitivity                    
-                    for feature_res in [10]: # 10 means 10x10 pixel groups are masked at a time
-                        for run in range(5): # 5 runs are used to get a more stable result
+                    for feature_res in [6]: # 10 means 10x10 pixel groups are masked at a time
+                        for run in range(3): # 5 runs are used to get a more stable result
                             print(f'Running {run} of {painting_path} with {n_masks} masks, {p_keep} keep ratio, and {feature_res} feature resolution')
                             # heatmaps for the painting indicating the relevance of each pixel for the prediction
                             explain_painting(n_masks            = n_masks,
@@ -798,4 +899,4 @@ if __name__ == "__main__":
         # After running all the individual analyses
         for painting_path in painting_paths:
             print(f"Integrating results for {painting_path}")
-            integrate_results(image_path=painting_path, n_masks=100, p_keep=0.3, feature_res=10, runs=5)
+            integrate_results(image_path=painting_path, n_masks=50, p_keep=0.3, feature_res=6, runs=3)
