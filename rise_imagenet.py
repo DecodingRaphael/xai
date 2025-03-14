@@ -10,13 +10,14 @@ import dianna
 from dianna import visualization
 import cv2
 from cv2 import INTER_NEAREST
-from skimage import io, color
+from skimage import io, color, feature, filters
 from tqdm import tqdm
 import scipy.stats
 import matplotlib.pyplot as plt
+import matplotlib.colors
 
 # Custom RISE implementation to ensure dimension compatibility
-def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
+def custom_rise(model_fn, image, n_masks=10, p_keep=0.3, feature_res=10):
     """Custom RISE implementation that ensures dimension compatibility"""
     
     # Create masks for RISE
@@ -26,7 +27,7 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
     masks = []
     cell_size = min(h, w) // feature_res
     
-    print(f"Generating {n_masks} masks of size {h}x{w} with cell size {cell_size}")
+    #print(f"Generating {n_masks} masks of size {h}x{w} with cell size {cell_size}")
     
     # Generate random masks
     for _ in range(n_masks):
@@ -46,7 +47,7 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
     
     # Stack masks
     masks = np.vstack(masks)  # Shape: (n_masks, 1, h, w)
-    print(f"Masks shape: {masks.shape}")
+    #print(f"Masks shape: {masks.shape}")
     
     # Apply masks to image
     # Repeat image to match number of masks
@@ -67,7 +68,7 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
     
     # Concatenate all masked images
     masked_images = np.vstack(masked_images)  # Shape: (n_masks, 1, h, w)
-    print(f"Masked images shape: {masked_images.shape}")
+    #print(f"Masked images shape: {masked_images.shape}")
     
     # Get predictions for all masked images
     predictions = []
@@ -78,7 +79,7 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
     
     # Concatenate all predictions
     predictions = np.vstack(predictions)  # Shape: (n_masks, num_classes)
-    print(f"Predictions shape: {predictions.shape}")
+    #print(f"Predictions shape: {predictions.shape}")
     
     # Compute saliency maps
     saliency = {}
@@ -103,9 +104,9 @@ def custom_rise(model_fn, image, n_masks=10, p_keep=0.5, feature_res=6):
 
 def explain_painting(
         image_path: Path = Path('data/0_Edinburgh_Nat_Gallery.jpg'),
-        p_keep: float = 0.5,
-        n_masks: int = 50,
-        feature_res: int = 6,
+        p_keep: float = 0.3,
+        n_masks: int = 100,
+        feature_res: int = 10,
         file_name_appendix: Optional[str] = None,
 ):
     model = Model()
@@ -126,7 +127,7 @@ def explain_painting(
     # Create a copy for model inference - skimage loads in RGB format
     x_model = x.copy()
     
-    print("Original image shape:", x.shape)
+    #print("Original image shape:", x.shape)
     
     # Ensure the image is normalized to [0,1] range if it's not already
     if x.max() > 1.0:
@@ -134,7 +135,7 @@ def explain_painting(
     
     # First convert to grayscale since DIANNA's masks are single-channel
     x_gray = color.rgb2gray(x)
-    print("Grayscale shape:", x_gray.shape)
+    #print("Grayscale shape:", x_gray.shape)
     
     # Resize image to be square (DIANNA's RISE expects square images)
     target_size = max(x_gray.shape)
@@ -144,20 +145,20 @@ def explain_painting(
     start_h = (target_size - x_gray.shape[0]) // 2
     start_w = (target_size - x_gray.shape[1]) // 2
     x_resized[start_h:start_h + x_gray.shape[0], start_w:start_w + x_gray.shape[1]] = x_gray
-    print("Resized shape:", x_resized.shape)
+    #print("Resized shape:", x_resized.shape)
     
     # Add batch dimension
     x_input = np.expand_dims(x_resized, axis=0)  # Shape: (1, height, height)
-    print("After adding batch dim:", x_input.shape)
+    #print("After adding batch dim:", x_input.shape)
     
     # Add channel dimension to match mask shape
     x_input = np.expand_dims(x_input, axis=-1)  # Shape: (1, height, height, 1)
-    print("After adding channel dim:", x_input.shape)
+    #print("After adding channel dim:", x_input.shape)
     
     # Process image for our custom RISE implementation
     # Custom RISE expects (batch, channels, height, width)
     x_rise = np.transpose(x_input, (0, 3, 1, 2))  # Move channel dim to position 1
-    print("After transpose for RISE:", x_rise.shape)
+    #print("After transpose for RISE:", x_rise.shape)
     
     # Create a wrapper function to ensure predictions are in the right format
     def model_wrapper(x):
@@ -192,8 +193,8 @@ def explain_painting(
             # Extract the actual image region from the padded square
             relevance_map = relevance_map[start_h:start_h + x_gray.shape[0], start_w:start_w + x_gray.shape[1]]
         
-        print(f'Explanation for `{class_name(class_idx)}` ({predictions[0][class_idx]}), '
-              f'relevances: min={np.min(relevance_map)}, max={np.max(relevance_map)}, mean={np.mean(relevance_map)}')
+        #print(f'Explanation for `{class_name(class_idx)}` ({predictions[0][class_idx]}), '
+        #      f'relevances: min={np.min(relevance_map)}, max={np.max(relevance_map)}, mean={np.mean(relevance_map)}')
         
         # Use original RGB image for visualization
         visualization.plot_image(relevance_map, x, heatmap_cmap='jet',
@@ -272,6 +273,139 @@ def calculate_clarity_metrics(relevance_maps):
     }
     
     return metrics
+
+def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enhanced RISE Map", 
+                                  edge_method='sobel', edge_alpha=0.7, heatmap_alpha=0.6, 
+                                  edge_color='white', heatmap_cmap='jet'):
+    """
+    Create visualization overlaying RISE heatmaps with edge detection maps to show
+    if the model focuses on brushstroke patterns.
+    
+    Parameters:
+    -----------
+    image : numpy.ndarray
+        Original image (RGB format, values in [0,1])
+    heatmap : numpy.ndarray
+        RISE relevance map
+    output_path : str or Path
+        Path to save the visualization
+    title : str
+        Title for the plot
+    edge_method : str
+        Edge detection method ('sobel', 'canny', 'laplacian', 'scharr')
+    edge_alpha : float
+        Opacity of edge overlay (0-1)
+    heatmap_alpha : float
+        Opacity of heatmap overlay (0-1)
+    edge_color : str
+        Color for edge highlighting
+    heatmap_cmap : str
+        Colormap for heatmap
+    """
+    # Ensure image is in [0,1] range
+    if image.max() > 1.0:
+        image = image / 255.0
+    
+    # Convert to grayscale for edge detection
+    gray = color.rgb2gray(image)
+    
+    # Apply the specified edge detection method
+    if edge_method == 'canny':
+        edges = feature.canny(gray, sigma=1.0)
+    elif edge_method == 'sobel':
+        sobelx = filters.sobel_h(gray)
+        sobely = filters.sobel_v(gray)
+        edges = np.sqrt(sobelx**2 + sobely**2)
+        # Normalize to [0,1]
+        edges = (edges - edges.min()) / (edges.max() - edges.min() + 1e-10)
+    elif edge_method == 'laplacian':
+        edges = np.abs(filters.laplace(gray))
+        # Normalize to [0,1]
+        edges = (edges - edges.min()) / (edges.max() - edges.min() + 1e-10)
+    elif edge_method == 'scharr':
+        scharrx = filters.scharr_h(gray)
+        scharry = filters.scharr_v(gray)
+        edges = np.sqrt(scharrx**2 + scharry**2)
+        # Normalize to [0,1]
+        edges = (edges - edges.min()) / (edges.max() - edges.min() + 1e-10)
+    else:
+        raise ValueError(f"Unsupported edge method: {edge_method}")
+    
+    # Create figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+    
+    # First subplot: Standard RISE heatmap visualization
+    ax1.imshow(image)
+    im1 = ax1.imshow(heatmap, cmap=heatmap_cmap, alpha=heatmap_alpha)
+    ax1.set_title("Standard RISE Heatmap")
+    plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04)
+    ax1.axis('off')
+    
+    # Second subplot: Edge-enhanced visualization
+    ax2.imshow(image)
+    im2 = ax2.imshow(heatmap, cmap=heatmap_cmap, alpha=heatmap_alpha)
+    
+    # Create a mask of edges above a threshold (only show strong edges)
+    edge_threshold = 0.2  # Adjust as needed
+    edge_mask = edges > edge_threshold
+    
+    # Create an edge overlay that only shows edges in regions highlighted by the heatmap
+    heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-10)
+    heatmap_threshold = 0.5  # Only show edges in regions with significant relevance
+    combined_mask = edge_mask & (heatmap_norm > heatmap_threshold)
+    
+    # Convert mask to RGB for overlay
+    edge_overlay = np.zeros((*combined_mask.shape, 4))  # RGBA
+    edge_overlay[combined_mask, :3] = matplotlib.colors.to_rgb(edge_color)  # RGB for the edge color
+    edge_overlay[combined_mask, 3] = edge_alpha  # Alpha channel
+    
+    # Overlay edges on second subplot
+    ax2.imshow(edge_overlay)
+    ax2.set_title(f"Edge-Enhanced RISE Map ({edge_method.capitalize()} Edges)")
+    plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+    ax2.axis('off')
+    
+    # Add an overall title
+    fig.suptitle(title, fontsize=16)
+    plt.tight_layout()
+    
+    # Save the figure
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Also create a single image with the combined visualization
+    # This is more focused on the edge-heatmap overlap
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image)
+    plt.imshow(heatmap, cmap=heatmap_cmap, alpha=heatmap_alpha)
+    
+    # Create a 3-channel overlay to highlight edges in areas of high relevance
+    # The intensity of the edge color is proportional to both edge strength and heatmap value
+    edge_highlight = np.zeros((*edges.shape, 3))  # RGB
+    
+    # Scale edges by heatmap intensity - this highlights edges in areas the model finds important
+    weighted_edges = edges * heatmap_norm
+    weighted_edges = (weighted_edges - weighted_edges.min()) / (weighted_edges.max() - weighted_edges.min() + 1e-10)
+    
+    # Apply a threshold to reduce noise
+    important_edges = weighted_edges > 0.2
+    edge_highlight[important_edges] = matplotlib.colors.to_rgb(edge_color)
+    
+    # Scale the brightness by the edge importance
+    for i in range(3):
+        edge_highlight[:, :, i] *= weighted_edges
+    
+    plt.imshow(edge_highlight, alpha=edge_alpha)
+    plt.title(f"Brushstroke Analysis: RISE Relevance + {edge_method.capitalize()} Edges")
+    plt.axis('off')
+    plt.tight_layout()
+    
+    # Save the combined single visualization
+    combined_path = str(output_path).replace('.png', '_combined.png')
+    plt.savefig(combined_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    return combined_path
 
 def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
     """
@@ -386,9 +520,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
         start_h = (target_size - orig_height) // 2
         start_w = (target_size - orig_width) // 2
         
-        print(f"Original image dimensions: {orig_height}x{orig_width}")
-        print(f"Padded square dimensions: {target_size}x{target_size}")
-        print(f"Padding: top={start_h}, left={start_w}")
+        #print(f"Original image dimensions: {orig_height}x{orig_width}")
+        #print(f"Padded square dimensions: {target_size}x{target_size}")
+        #print(f"Padding: top={start_h}, left={start_w}")
             
         # Make sure we have classes 0 and 1 (Raphael and non-Raphael)
         if 0 in mean_relevances and 1 in mean_relevances:
@@ -517,6 +651,92 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=5):
         else:
             print(f"Warning: Expected to find classes 0 and 1 in results, but found {all_classes}")
             
+        # After creating difference map, add edge-enhanced visualizations
+        try:
+            # Create edge-enhanced visualizations using different edge detection methods
+            for class_idx in [0, 1]:  # 0=Raphael, 1=Non-Raphael
+                mean_map = mean_relevances[class_idx][0]  # Get first batch item
+                
+                # Extract original image region if needed
+                if mean_map.shape[:2] != (orig_height, orig_width):
+                    if len(mean_map.shape) == 2:  # Handle 2D case
+                        mean_map = mean_map[start_h:start_h + orig_height, start_w:start_w + orig_width]
+                    elif len(mean_map.shape) == 3:  # Handle 3D case with channels
+                        mean_map = mean_map[start_h:start_h + orig_height, start_w:start_w + orig_width, :]
+                
+                # Create directory for edge visualizations
+                edge_dir = output_dir / "visualizations" / "edge_analysis"
+                edge_dir.mkdir(exist_ok=True, parents=True)
+                
+                # Generate edge-enhanced visualizations with different edge detection methods
+                for edge_method in ['sobel', 'canny', 'laplacian', 'scharr']:
+                    output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_{edge_method}_edges.png"
+                    try:
+                        visualize_edge_heatmap_overlay(
+                            image=x, 
+                            heatmap=mean_map, 
+                            output_path=output_path,
+                            title=f"{class_name(class_idx)} Detection: Brushstroke Analysis",
+                            edge_method=edge_method
+                        )
+                        print(f"Created edge-enhanced visualization using {edge_method} for {class_name(class_idx)}")
+                    except Exception as edge_err:
+                        print(f"Error creating {edge_method} visualization for {class_name(class_idx)}: {edge_err}")
+                
+                # Also create an edge-enhanced visualization for the confidence map
+                if class_idx in std_relevances:
+                    std_map = std_relevances[class_idx][0]
+                    # Extract original image region if needed
+                    if std_map.shape[:2] != (orig_height, orig_width):
+                        if len(std_map.shape) == 2:
+                            std_map = std_map[start_h:start_h + orig_height, start_w:start_w + orig_width]
+                        elif len(std_map.shape) == 3:
+                            std_map = std_map[start_h:start_h + orig_height, start_w:start_w + orig_width, :]
+                    
+                    # Create confidence map (high relevance and low variance)
+                    norm_std = std_map / (np.max(std_map) + 1e-10)
+                    confidence_map = mean_map * (1 - norm_std)
+                    
+                    # Create edge-enhanced visualization of confidence map with sobel edges
+                    output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_confidence_sobel_edges.png"
+                    visualize_edge_heatmap_overlay(
+                        image=x, 
+                        heatmap=confidence_map, 
+                        output_path=output_path,
+                        title=f"{class_name(class_idx)} Detection: Confident Brushstroke Patterns",
+                        edge_method='sobel'  # Sobel is often best for brushstrokes
+                    )
+                    print(f"Created edge-enhanced confidence map for {class_name(class_idx)}")
+                    
+            # Create edge-enhanced difference map
+            if 0 in mean_relevances and 1 in mean_relevances:
+                diff_map_raw = mean_relevances[0][0] - mean_relevances[1][0]
+                # Extract original image region if needed
+                if diff_map_raw.shape[:2] != (orig_height, orig_width):
+                    diff_map = diff_map_raw[start_h:start_h + orig_height, start_w:start_w + orig_width]
+                else:
+                    diff_map = diff_map_raw
+                    
+                # Normalize to [0,1] range for visualization
+                diff_norm = (diff_map - diff_map.min()) / (diff_map.max() - diff_map.min() + 1e-10)
+                
+                # Create edge-enhanced visualization of difference map with sobel edges
+                output_path = edge_dir / f"{base_pattern}_difference_sobel_edges.png"
+                visualize_edge_heatmap_overlay(
+                    image=x, 
+                    heatmap=diff_norm, 
+                    output_path=output_path,
+                    title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns",
+                    edge_method='sobel',
+                    heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
+                )
+                print("Created edge-enhanced difference map")
+        
+        except Exception as e:
+            print(f"Error creating edge-enhanced visualizations: {e}")
+            import traceback
+            traceback.print_exc()
+        
     except Exception as e:
         print(f"Error creating visualizations: {e}")
         import traceback
@@ -562,10 +782,11 @@ if __name__ == "__main__":
         painting_paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
         
         for painting_path in painting_paths:
-            for n_masks in [50]:  # Using 500 masks for more stable results
-                for p_keep in [0.5]: # verhouding mask vs non-mask pixels                    
-                    for feature_res in [6]: # als je maskeert, wil je groepen maskeren die naast gelegen zijn
-                        for run in range(5):
+            for n_masks in [100]:  # Using 500 masks for more stable results
+                for p_keep in [0.3]: # 0.3 means 30% of the pixels are masked, 
+                    #which is a good balance between stability and sensitivity                    
+                    for feature_res in [10]: # 10 means 10x10 pixel groups are masked at a time
+                        for run in range(5): # 5 runs are used to get a more stable result
                             print(f'Running {run} of {painting_path} with {n_masks} masks, {p_keep} keep ratio, and {feature_res} feature resolution')
                             # heatmaps for the painting indicating the relevance of each pixel for the prediction
                             explain_painting(n_masks            = n_masks,
@@ -577,4 +798,4 @@ if __name__ == "__main__":
         # After running all the individual analyses
         for painting_path in painting_paths:
             print(f"Integrating results for {painting_path}")
-            integrate_results(image_path=painting_path, n_masks=50, p_keep=0.5, feature_res=6, runs=5)
+            integrate_results(image_path=painting_path, n_masks=100, p_keep=0.3, feature_res=10, runs=5)
