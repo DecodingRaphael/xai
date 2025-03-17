@@ -84,17 +84,20 @@ def scale_inverse_log(x, x_min, x_max, y_min, y_max):
     # Check input boundaries
     if x < x_min or x > x_max:
         return "Input x must be within the range [x_min, x_max]"
-
+    
+    # Small epsilon to prevent division by zero
+    epsilon = 1e-10
+    
     # Calculate inverse log of x
-    inv_log_x = -1 / math.log(x + 1)
-
+    inv_log_x = -1 / (math.log(x + 1) + epsilon)
+    
     # Calculate inverse log of x_min and x_max
-    inv_log_x_min = -1 / math.log(x_min + 1)
-    inv_log_x_max = -1 / math.log(x_max + 1)
-
+    inv_log_x_min = -1 / (math.log(x_min + 1) + epsilon)
+    inv_log_x_max = -1 / (math.log(x_max + 1) + epsilon)
+    
     # Scale the inverse logarithmic value to the target range [y_min, y_max]
     y = y_min + (inv_log_x - inv_log_x_min) * (y_max - y_min) / (inv_log_x_max - inv_log_x_min)
-
+    
     return y
 
 
@@ -125,13 +128,34 @@ def extract_features(img_path, model):
     return None
 
 
-# Function to calculate edge features using Canny edge detector
-def calculate_canny_edges(img):
+# Helper function to convert any image format to 2D grayscale
+def _convert_to_grayscale(img):
     # Convert to grayscale if the image is in color
-    if len(img.shape) > 2 and img.shape[2] > 1:
-        gray = color.rgb2gray(img)
+    if len(img.shape) > 2:
+        # Handle DIANNA format (batch, channel, height, width)
+        if len(img.shape) == 4 and img.shape[0] == 1 and img.shape[1] == 1:
+            # Extract the image from batch and channel dimensions
+            gray = img[0, 0]
+        # Handle RGB format
+        elif img.shape[-1] > 1:
+            gray = color.rgb2gray(img)
+        # Handle grayscale with extra dimensions
+        else:
+            gray = img.squeeze()
     else:
         gray = img
+    
+    # Ensure we have a 2D array
+    if len(gray.shape) != 2:
+        raise ValueError(f"Failed to convert image to 2D grayscale. Shape: {gray.shape}")
+    
+    return gray
+
+
+# Function to calculate edge features using Canny edge detector
+def calculate_canny_edges(img):
+    # Convert to grayscale
+    gray = _convert_to_grayscale(img)
     
     # Apply Canny edge detection using scikit-image
     edges = feature.canny(gray, sigma=1.0)
@@ -142,12 +166,9 @@ def calculate_canny_edges(img):
 
 # Function to calculate edge features using Sobel operator
 def calculate_sobel_edges(img):
-    # Convert to grayscale if the image is in color
-    if len(img.shape) > 2 and img.shape[2] > 1:
-        gray = color.rgb2gray(img)
-    else:
-        gray = img
-        
+    # Convert to grayscale
+    gray = _convert_to_grayscale(img)
+    
     # Apply Sobel filter using scikit-image
     sobelx = filters.sobel_h(gray)
     sobely = filters.sobel_v(gray)
@@ -157,12 +178,9 @@ def calculate_sobel_edges(img):
 
 # Function to calculate edge features using Laplacian operator
 def calculate_laplacian_edges(img):
-    # Convert to grayscale if the image is in color
-    if len(img.shape) > 2 and img.shape[2] > 1:
-        gray = color.rgb2gray(img)
-    else:
-        gray = img
-        
+    # Convert to grayscale
+    gray = _convert_to_grayscale(img)
+    
     # Apply Laplacian filter using scikit-image
     laplacian = filters.laplace(gray)
     
@@ -171,12 +189,9 @@ def calculate_laplacian_edges(img):
 
 # Function to calculate edge features using Scharr operator
 def calculate_scharr_edges(img):
-    # Convert to grayscale if the image is in color
-    if len(img.shape) > 2 and img.shape[2] > 1:
-        gray = color.rgb2gray(img)
-    else:
-        gray = img
-        
+    # Convert to grayscale
+    gray = _convert_to_grayscale(img)
+    
     # Apply Scharr filter using scikit-image
     scharrx = filters.scharr_h(gray)
     scharry = filters.scharr_v(gray)

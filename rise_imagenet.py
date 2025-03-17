@@ -538,7 +538,16 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
     all_relevances = []
     for file in relevances_files:
         data = np.load(file, allow_pickle=True)
-        all_relevances.append(data['relevances'].item())  # Convert to Python dict
+        # Check if 'relevances' is already a dict or if it's a numpy array
+        if isinstance(data['relevances'], dict):
+            all_relevances.append(data['relevances'])
+        else:
+            # Try to convert to dict if it's a numpy array with .item() method
+            try:
+                all_relevances.append(data['relevances'].item())
+            except (AttributeError, ValueError):
+                print(f"Warning: Could not convert relevances from {file} to dictionary")
+                continue
     
     # Process each class separately
     # First, identify all class indices across all runs
@@ -619,11 +628,14 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                 (output_dir / "visualizations").mkdir(exist_ok=True)
                 
                 # Use DIANNA visualization for individual maps
-                visualization.plot_image(
-                    mean_map, x, heatmap_cmap='jet',
-                    output_filename=str(output_dir / "visualizations" / f"{base_pattern}_mean_{class_name(class_idx)}.png"),
-                    show_plot=False
-                )
+                try:
+                    visualization.plot_image(
+                        mean_map, x, heatmap_cmap='jet',
+                        output_filename=str(output_dir / "visualizations" / f"{base_pattern}_mean_{class_name(class_idx)}.png"),
+                        show_plot=False
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not create visualization for {class_name(class_idx)}: {e}")
                 
                 # Visualize standard deviation (uncertainty) maps
                 std_map = std_relevances[class_idx][0]  # Get first batch item
@@ -635,43 +647,52 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                     elif len(std_map.shape) == 3:  # Handle 3D case with channels
                         std_map = std_map[start_h:start_h + orig_height, start_w:start_w + orig_width, :]
                 
-                visualization.plot_image(
-                    std_map, x, heatmap_cmap='viridis',
-                    output_filename=str(output_dir / "visualizations" / f"{base_pattern}_std_{class_name(class_idx)}.png"),
-                    show_plot=False
-                )
+                try:
+                    visualization.plot_image(
+                        std_map, x, heatmap_cmap='viridis',
+                        output_filename=str(output_dir / "visualizations" / f"{base_pattern}_std_{class_name(class_idx)}.png"),
+                        show_plot=False
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not create standard deviation visualization for {class_name(class_idx)}: {e}")
                 
                 # Create confidence maps (mean * (1 - normalized std))
                 # High confidence = high relevance AND low variability
                 norm_std = std_map / (np.max(std_map) + 1e-10)
                 confidence_map = mean_map * (1 - norm_std)
-                visualization.plot_image(
-                    confidence_map, x, heatmap_cmap='jet',
-                    output_filename=str(output_dir / "visualizations" / f"{base_pattern}_confidence_{class_name(class_idx)}.png"),
-                    show_plot=False
-                )
+                try:
+                    visualization.plot_image(
+                        confidence_map, x, heatmap_cmap='jet',
+                        output_filename=str(output_dir / "visualizations" / f"{base_pattern}_confidence_{class_name(class_idx)}.png"),
+                        show_plot=False
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not create confidence visualization for {class_name(class_idx)}: {e}")
             
             # 2. Create a difference map (Raphael - Non-Raphael)
-            plt.figure(figsize=(10, 8))
-            
-            # Extract difference map from original image region
-            diff_map_raw = mean_relevances[0][0] - mean_relevances[1][0]
-            
-            # Extract original image region
-            if diff_map_raw.shape[:2] != (orig_height, orig_width):
-                diff_map = diff_map_raw[start_h:start_h + orig_height, start_w:start_w + orig_width]
-            else:
-                diff_map = diff_map_raw
-            
-            # Scale for better visualization
-            abs_max = np.max(np.abs(diff_map))
-            plt.imshow(x)
-            plt.imshow(diff_map, cmap='RdBu_r', alpha=0.7, vmin=-abs_max, vmax=abs_max)
-            plt.colorbar(label='Raphael - Non-Raphael')
-            plt.title('Difference Map (Red = Raphael, Blue = Non-Raphael)')
-            plt.tight_layout()
-            plt.savefig(str(output_dir / "visualizations" / f"{base_pattern}_difference_map.png"), dpi=300)
-            plt.close()
+            try:
+                plt.figure(figsize=(10, 8))
+                
+                # Extract difference map from original image region
+                diff_map_raw = mean_relevances[0][0] - mean_relevances[1][0]
+                
+                # Extract original image region
+                if diff_map_raw.shape[:2] != (orig_height, orig_width):
+                    diff_map = diff_map_raw[start_h:start_h + orig_height, start_w:start_w + orig_width]
+                else:
+                    diff_map = diff_map_raw
+                
+                # Scale for better visualization
+                abs_max = np.max(np.abs(diff_map))
+                plt.imshow(x)
+                plt.imshow(diff_map, cmap='RdBu_r', alpha=0.7, vmin=-abs_max, vmax=abs_max)
+                plt.colorbar(label='Raphael - Non-Raphael')
+                plt.title('Difference Map (Red = Raphael, Blue = Non-Raphael)')
+                plt.tight_layout()
+                plt.savefig(str(output_dir / "visualizations" / f"{base_pattern}_difference_map.png"), dpi=300)
+                plt.close()
+            except Exception as e:
+                print(f"Warning: Could not create difference map: {e}")
             
             # 3. Calculate integrated metrics across runs
             # First collect all metrics from individual runs
@@ -686,45 +707,48 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                     
             if all_metrics:
                 # Concatenate all metrics and calculate mean, std
-                combined_metrics = pd.concat(all_metrics, ignore_index=True)
-                agg_metrics = combined_metrics.agg(['mean', 'std', 'min', 'max'])
-                
-                # Save to CSV
-                agg_metrics.to_csv(str(output_dir / f"{base_pattern}_integrated_metrics.csv"))
-                
-                # Print summary
-                print("\nIntegrated Clarity Metrics Summary:")
-                for metric in combined_metrics.columns:
-                    mean_val = agg_metrics.loc['mean', metric]
-                    std_val = agg_metrics.loc['std', metric]
-                    print(f"{metric}: {mean_val:.4f} ± {std_val:.4f}")
-                
-                # Print interpretation based on metrics
-                clarity = agg_metrics.loc['mean', 'clarity_score']
-                overlap = agg_metrics.loc['mean', 'overlap_iou']
-                correlation = agg_metrics.loc['mean', 'map_correlation']
-                
-                print("\nInterpretation of Results:")
-                if clarity > 0.5:
-                    print("- HIGH CLARITY: The model shows clear distinction between Raphael and non-Raphael features")
-                elif clarity > 0.2:
-                    print("- MODERATE CLARITY: The model shows some distinction between Raphael and non-Raphael features")
-                else:
-                    print("- LOW CLARITY: The model shows poor distinction between Raphael and non-Raphael features")
+                try:
+                    combined_metrics = pd.concat(all_metrics, ignore_index=True)
+                    agg_metrics = combined_metrics.agg(['mean', 'std', 'min', 'max'])
                     
-                if overlap < 0.3:
-                    print("- LOW OVERLAP: The relevance maps for Raphael and non-Raphael have minimal overlap, suggesting distinct features")
-                elif overlap < 0.6:
-                    print("- MODERATE OVERLAP: The relevance maps show some overlap between Raphael and non-Raphael features")
-                else:
-                    print("- HIGH OVERLAP: The relevance maps show significant overlap, making feature distinction ambiguous")
+                    # Save to CSV
+                    agg_metrics.to_csv(str(output_dir / f"{base_pattern}_integrated_metrics.csv"))
                     
-                if abs(correlation) < 0.2:
-                    print("- LOW CORRELATION: The model focuses on different regions for Raphael vs non-Raphael")
-                elif abs(correlation) < 0.5:
-                    print("- MODERATE CORRELATION: The model shows some similarity in focus areas")
-                else:
-                    print("- HIGH CORRELATION: The model focuses on similar regions, possibly indicating poor discrimination")
+                    # Print summary
+                    print("\nIntegrated Clarity Metrics Summary:")
+                    for metric in combined_metrics.columns:
+                        mean_val = agg_metrics.loc['mean', metric]
+                        std_val = agg_metrics.loc['std', metric]
+                        print(f"{metric}: {mean_val:.4f} ± {std_val:.4f}")
+                    
+                    # Print interpretation based on metrics
+                    clarity = agg_metrics.loc['mean', 'clarity_score']
+                    overlap = agg_metrics.loc['mean', 'overlap_iou']
+                    correlation = agg_metrics.loc['mean', 'map_correlation']
+                    
+                    print("\nInterpretation of Results:")
+                    if clarity > 0.5:
+                        print("- HIGH CLARITY: The model shows clear distinction between Raphael and non-Raphael features")
+                    elif clarity > 0.2:
+                        print("- MODERATE CLARITY: The model shows some distinction between Raphael and non-Raphael features")
+                    else:
+                        print("- LOW CLARITY: The model shows poor distinction between Raphael and non-Raphael features")
+                        
+                    if overlap < 0.3:
+                        print("- LOW OVERLAP: The relevance maps for Raphael and non-Raphael have minimal overlap, suggesting distinct features")
+                    elif overlap < 0.6:
+                        print("- MODERATE OVERLAP: The relevance maps show some overlap between Raphael and non-Raphael features")
+                    else:
+                        print("- HIGH OVERLAP: The relevance maps show significant overlap, making feature distinction ambiguous")
+                        
+                    if abs(correlation) < 0.2:
+                        print("- LOW CORRELATION: The model focuses on different regions for Raphael vs non-Raphael")
+                    elif abs(correlation) < 0.5:
+                        print("- MODERATE CORRELATION: The model shows some similarity in focus areas")
+                    else:
+                        print("- HIGH CORRELATION: The model focuses on similar regions, possibly indicating poor discrimination")
+                except Exception as e:
+                    print(f"Error calculating aggregated metrics: {e}")
         
         else:
             print(f"Warning: Expected to find classes 0 and 1 in results, but found {all_classes}")
@@ -733,6 +757,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
         try:
             # Create edge-enhanced visualizations using different edge detection methods
             for class_idx in [0, 1]:  # 0=Raphael, 1=Non-Raphael
+                if class_idx not in mean_relevances:
+                    continue
+                    
                 mean_map = mean_relevances[class_idx][0]  # Get first batch item
                 
                 # Extract original image region if needed
@@ -783,17 +810,20 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                     confidence_map = mean_map * (1 - norm_std)
                     
                     # Create edge-enhanced visualization of confidence map with combined edges
-                    output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_confidence_combined_edges.png"
-                    edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
-                    visualize_edge_heatmap_overlay(
-                        image=x, 
-                        heatmap=confidence_map, 
-                        output_path=output_path,
-                        title=f"{class_name(class_idx)} Detection: Confident Brushstroke Patterns",
-                        edge_method='combined',
-                        edge_weights=edge_weights
-                    )
-                    print(f"Created edge-enhanced confidence map with combined edges for {class_name(class_idx)}")
+                    try:
+                        output_path = edge_dir / f"{base_pattern}_{class_name(class_idx)}_confidence_combined_edges.png"
+                        edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
+                        visualize_edge_heatmap_overlay(
+                            image=x, 
+                            heatmap=confidence_map, 
+                            output_path=output_path,
+                            title=f"{class_name(class_idx)} Detection: Confident Brushstroke Patterns",
+                            edge_method='combined',
+                            edge_weights=edge_weights
+                        )
+                        print(f"Created edge-enhanced confidence map with combined edges for {class_name(class_idx)}")
+                    except Exception as e:
+                        print(f"Error creating edge-enhanced confidence map for {class_name(class_idx)}: {e}")
                     
             # Create edge-enhanced difference map with various edge detection methods
             if 0 in mean_relevances and 1 in mean_relevances:
@@ -808,30 +838,36 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                 diff_norm = (diff_map - diff_map.min()) / (diff_map.max() - diff_map.min() + 1e-10)
                 
                 # Create edge-enhanced visualization of difference map with sobel edges (keep this for compatibility)
-                output_path = edge_dir / f"{base_pattern}_difference_sobel_edges.png"
-                visualize_edge_heatmap_overlay(
-                    image=x, 
-                    heatmap=diff_norm, 
-                    output_path=output_path,
-                    title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns",
-                    edge_method='sobel',
-                    heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
-                )
-                print("Created edge-enhanced difference map with Sobel edges")
+                try:
+                    output_path = edge_dir / f"{base_pattern}_difference_sobel_edges.png"
+                    visualize_edge_heatmap_overlay(
+                        image=x, 
+                        heatmap=diff_norm, 
+                        output_path=output_path,
+                        title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns",
+                        edge_method='sobel',
+                        heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
+                    )
+                    print("Created edge-enhanced difference map with Sobel edges")
+                except Exception as e:
+                    print(f"Error creating edge-enhanced difference map with Sobel edges: {e}")
                 
                 # Now create the combined edge version of the difference map
-                output_path = edge_dir / f"{base_pattern}_difference_combined_edges.png"
-                edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
-                visualize_edge_heatmap_overlay(
-                    image=x, 
-                    heatmap=diff_norm, 
-                    output_path=output_path,
-                    title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns (Combined Edge Analysis)",
-                    edge_method='combined',
-                    edge_weights=edge_weights,
-                    heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
-                )
-                print("Created edge-enhanced difference map with combined edges")
+                try:
+                    output_path = edge_dir / f"{base_pattern}_difference_combined_edges.png"
+                    edge_weights = [0.2, 0.3, 0.2, 0.3]  # Canny, Sobel, Laplacian, Scharr
+                    visualize_edge_heatmap_overlay(
+                        image=x, 
+                        heatmap=diff_norm, 
+                        output_path=output_path,
+                        title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns (Combined Edge Analysis)",
+                        edge_method='combined',
+                        edge_weights=edge_weights,
+                        heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
+                    )
+                    print("Created edge-enhanced difference map with combined edges")
+                except Exception as e:
+                    print(f"Error creating edge-enhanced difference map with combined edges: {e}")
         
         except Exception as e:
             print(f"Error creating edge-enhanced visualizations: {e}")
