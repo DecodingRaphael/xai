@@ -36,12 +36,12 @@ By applying explainable AI techniques, we can now visualize which aspects of pai
    - joblib
    - diskcache
 
-3. Data organization:
+3. Data organization (go to [Github](https://github.com/ugail/RaphaelHeritageSciencePaper) for download options):
    - Place Raphael paintings in `data/Raphael/`
    - Place non-Raphael paintings in `data/Not Raphael/`
    - Example paintings are included in the `data/` directory
 
-4. Pre-trained models:
+4. Pre-trained models (go to [Github](https://github.com/ugail/RaphaelHeritageSciencePaper) for donwload options):
    - The repository includes pre-trained models in the `models/` directory:
      - `resnet50_model.h5`: The ResNet50 model for feature extraction
      - `28_09_2023_svm_final_model.pkl`: The SVM classifier
@@ -62,7 +62,7 @@ python rise_imagenet.py
 
 This will:
 1. Process the example painting (`data/0_Edinburgh_Nat_Gallery.jpg`)
-2. Generate visualizations using 50 masks, 0.3 keep ratio, and feature resolution of 6
+2. Generate visualizations using 50 masks, 0.3 keep ratio, and feature resolution of 6. These parameters can be modified in the script for increasing accuracy.
 3. Run the analysis 3 times to ensure stability
 4. Integrate results from the 3 runs
 5. Save all outputs to the `output/` directory
