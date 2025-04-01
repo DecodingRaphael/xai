@@ -1,86 +1,97 @@
 import warnings
 warnings.filterwarnings('ignore')
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Suppress TensorFlow warnings
 from typing import Optional
 import pandas as pd
 from model import Model
 import numpy as np
 from pathlib import Path
-#from keras import utils
-import dianna
 from dianna import visualization
-import cv2
-from cv2 import INTER_NEAREST
-from skimage import io, color, feature, filters
+from skimage import io, color, feature, filters, transform
 from tqdm import tqdm
 import scipy.stats
 import matplotlib.pyplot as plt
 import matplotlib.colors
 
+# Silence other common warnings
+np.seterr(all='ignore')
+plt.rcParams['figure.max_open_warning'] = 0
+
 # Custom RISE implementation to ensure dimension compatibility
 def custom_rise(model_fn, image, n_masks=50, p_keep=0.3, feature_res=6):
-    """Custom RISE implementation that ensures dimension compatibility"""
+    """
+Custom implementation of the RISE algorithm for generating saliency maps.
+
+This function creates random binary masks, applies them to the input image,
+and uses the provided model function to obtain predictions. The predictions
+are then used to compute saliency maps for each class, highlighting the
+importance of different regions in the image.
+
+Parameters:
+    model_fn (callable): The model function to obtain predictions.
+    image (np.ndarray): The input image in (1, 1, h, w) format.
+    n_masks (int, optional): Number of random masks to generate. Default is 50.
+    p_keep (float, optional): Probability of keeping a pixel in the mask. Default is 0.3.
+    feature_res (int, optional): Resolution for the low-res mask. Default is 6.
+
+Returns:
+    dict: A dictionary where keys are class indices and values are saliency maps
+    with dimensions (1, h, w).
+"""
     
-    # Create masks for RISE
-    h, w = image.shape[2:4]  # Height and width from (1, 1, h, w) format
+    # Create masks for RISE, height and width from (1, 1, h, w) format
+    h, w = image.shape[2:4]
     
     # Generate random masks
     masks = []
-    cell_size = min(h, w) // feature_res
-    
-    #print(f"Generating {n_masks} masks of size {h}x{w} with cell size {cell_size}")
+    cell_size = min(h, w) // feature_res       
     
     # Generate random masks
     for _ in range(n_masks):
         # Create a low-res binary mask
         mask_low_res = np.random.binomial(1, p_keep, size=(feature_res, feature_res))
         
-        # Upsample to image size using nearest neighbor
-        mask = cv2.resize(
-            mask_low_res, 
-            (w, h), 
-            interpolation=cv2.INTER_NEAREST
-        )
+        # Upsample to image size using skimage's transform.resize with nearest neighbor interpolation
+        # order=0 specifies nearest-neighbor interpolation
+        mask = transform.resize(mask_low_res, (h, w), order=0, mode='constant', preserve_range=True).astype(mask_low_res.dtype)
         
         # Reshape to match image format for DIANNA
         mask = np.expand_dims(np.expand_dims(mask, axis=0), axis=0)  # (1, 1, h, w)
         masks.append(mask)
     
-    # Stack masks
-    masks = np.vstack(masks)  # Shape: (n_masks, 1, h, w)
-    #print(f"Masks shape: {masks.shape}")
+    # Stack masks: shape (n_masks, 1, h, w)
+    masks = np.vstack(masks)     
     
-    # Apply masks to image
-    # Repeat image to match number of masks
+    # Apply masks to image; repeat image to match number of masks
     masked_images = []
     batch_size = 1
     
     # Process masks in small batches
-    for i in tqdm(range(0, n_masks, batch_size), desc="Processing masks"):
+    for i in tqdm(range(0, n_masks, batch_size), desc="Processing masks", disable=n_masks < 20):
         batch_end = min(i + batch_size, n_masks)
         batch_masks = masks[i:batch_end]
         
         # Broadcast image to match number of masks in batch
         batch_images = np.repeat(image, batch_end - i, axis=0)  # Shape: (batch_size, 1, h, w)
         
-        # Apply masks
+        # Apply each mask to the image
         masked = batch_images * batch_masks  # Element-wise multiplication
         masked_images.append(masked)
     
-    # Concatenate all masked images
-    masked_images = np.vstack(masked_images)  # Shape: (n_masks, 1, h, w)
-    #print(f"Masked images shape: {masked_images.shape}")
+    # Stack the masked images; shape (n_masks, 1, h, w)
+    masked_images = np.vstack(masked_images)    
     
-    # Get predictions for all masked images
+    # Use the model function to get predictions for each masked image
     predictions = []
-    for i in tqdm(range(0, n_masks, batch_size), desc="Getting predictions"):
+    for i in tqdm(range(0, n_masks, batch_size), desc="Getting predictions", disable=n_masks < 20):
         batch_end = min(i + batch_size, n_masks)
         batch_preds = model_fn(masked_images[i:batch_end])
         predictions.append(batch_preds)
     
     # Concatenate all predictions
     predictions = np.vstack(predictions)  # Shape: (n_masks, num_classes)
-    #print(f"Predictions shape: {predictions.shape}")
-    
+        
     # Compute saliency maps
     saliency = {}
     num_classes = predictions.shape[1]
@@ -110,11 +121,9 @@ def explain_painting(
         file_name_appendix: Optional[str] = None,
 ):
     model = Model()
-    labels = [0, 1]  # Both Raphael and Non-Raphael classes
-    
-    file_name_base = create_file_name_base(feature_res, file_name_appendix, image_path, n_masks, p_keep)      
-    
-    # Load image with scikit-image for consistent RGB format
+    labels = [0, 1]  # Raphael and Non-Raphael classes    
+    file_name_base = create_file_name_base(feature_res, file_name_appendix, image_path, n_masks, p_keep)
+        
     x = io.imread(str(image_path))
     
     # Convert to RGB if it has an alpha channel
@@ -123,19 +132,15 @@ def explain_painting(
     
     if x is None:
         raise ValueError(f"Image not found at {image_path}")    
-
-    # Create a copy for model inference - skimage loads in RGB format
-    x_model = x.copy()
     
-    #print("Original image shape:", x.shape)
+    x_model = x.copy()    
     
     # Ensure the image is normalized to [0,1] range if it's not already
     if x.max() > 1.0:
         x = x / 255.0
     
     # First convert to grayscale since DIANNA's masks are single-channel
-    x_gray = color.rgb2gray(x)
-    #print("Grayscale shape:", x_gray.shape)
+    x_gray = color.rgb2gray(x)    
     
     # Resize image to be square (DIANNA's RISE expects square images)
     target_size = max(x_gray.shape)
@@ -145,20 +150,17 @@ def explain_painting(
     start_h = (target_size - x_gray.shape[0]) // 2
     start_w = (target_size - x_gray.shape[1]) // 2
     x_resized[start_h:start_h + x_gray.shape[0], start_w:start_w + x_gray.shape[1]] = x_gray
-    #print("Resized shape:", x_resized.shape)
-    
-    # Add batch dimension
-    x_input = np.expand_dims(x_resized, axis=0)  # Shape: (1, height, height)
-    #print("After adding batch dim:", x_input.shape)
-    
-    # Add channel dimension to match mask shape
-    x_input = np.expand_dims(x_input, axis=-1)  # Shape: (1, height, height, 1)
-    #print("After adding channel dim:", x_input.shape)
-    
-    # Process image for our custom RISE implementation
-    # Custom RISE expects (batch, channels, height, width)
+        
+    # Add batch dimension: shape (1, height, height)
+    x_input = np.expand_dims(x_resized, axis=0)  
+        
+    # Add channel dimension to match mask shape: shape (1, height, height, 1)
+    x_input = np.expand_dims(x_input, axis=-1)  
+        
+    # Process image for our custom RISE implementation, which expects (batch, channels, height, width)
     x_rise = np.transpose(x_input, (0, 3, 1, 2))  # Move channel dim to position 1
-    #print("After transpose for RISE:", x_rise.shape)
+    # Remove detailed shape output
+    print("Processing image for RISE analysis...")
     
     # Create a wrapper function to ensure predictions are in the right format
     def model_wrapper(x):
@@ -169,21 +171,14 @@ def explain_painting(
         return pred
     
     # Run custom RISE implementation instead of DIANNA
-    print("Using custom RISE implementation")
-    relevances = custom_rise(
-        model_wrapper,
-        x_rise,
-        n_masks=n_masks,
-        p_keep=p_keep,
-        feature_res=feature_res
+    print(f"Generating relevance maps with {n_masks} masks...")
+    relevances = custom_rise(model_wrapper, x_rise,
+                             n_masks=n_masks, feature_res=feature_res, p_keep=p_keep        
     )
 
-    # # Visualize the relevance scores for the predicted class on top of the input image
+    # Visualize the relevance scores for the predicted class on top of the input image
     predictions = model.run_on_batch(x_model[None, ...])
-    
-    #pred_idx = np.argmax(predictions[0])  # Get prediction from first batch
-    #print(f"Predicted class: {class_name(pred_idx)}")
-
+       
     # For visualization, we need to resize the relevance maps back to original size
     for class_idx in labels:
         relevance_map = relevances[class_idx][0]  # Remove batch dimension
@@ -193,14 +188,12 @@ def explain_painting(
             # Extract the actual image region from the padded square
             relevance_map = relevance_map[start_h:start_h + x_gray.shape[0], start_w:start_w + x_gray.shape[1]]
         
-        #print(f'Explanation for `{class_name(class_idx)}` ({predictions[0][class_idx]}), '
-        #      f'relevances: min={np.min(relevance_map)}, max={np.max(relevance_map)}, mean={np.mean(relevance_map)}')
-        
-        # Use original RGB image for visualization
+        # Print only summary statistics, not the whole array
+        print(f'Relevance map for {class_name(class_idx)} class (score: {predictions[0][class_idx]:.4f}), '
+              f'stats: min={np.min(relevance_map):.4f}, max={np.max(relevance_map):.4f}, mean={np.mean(relevance_map):.4f}')
+                
         visualization.plot_image(relevance_map, x, heatmap_cmap='jet',
-                        output_filename=str(file_name_base) + f'_{class_name(class_idx)}.png', 
-                        show_plot=False)
-    
+                        output_filename=str(file_name_base) + f'_{class_name(class_idx)}.png', show_plot=False)    
     np.savez_compressed(str(file_name_base) + '.npz', relevances=relevances)
 
     # After creating relevance maps
@@ -244,8 +237,7 @@ def calculate_clarity_metrics(relevance_maps):
     raphael_contrast = np.max(raphael_map) - np.min(raphael_map)
     non_raphael_contrast = np.max(non_raphael_map) - np.min(non_raphael_map)
     
-    # 2. Overlap between heatmaps (lower = clearer distinction)
-    # Normalize both maps to [0,1] range
+    # 2. Overlap between heatmaps (lower = clearer distinction). Normalize both maps to [0,1] range
     r_norm = (raphael_map - np.min(raphael_map)) / max(1e-10, np.max(raphael_map) - np.min(raphael_map))
     nr_norm = (non_raphael_map - np.min(non_raphael_map)) / max(1e-10, np.max(non_raphael_map) - np.min(non_raphael_map))
     
@@ -274,10 +266,9 @@ def calculate_clarity_metrics(relevance_maps):
     
     return metrics
 
-def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enhanced RISE Map", 
-                                  edge_method='combined', edge_alpha=0.7, heatmap_alpha=0.6, 
-                                  edge_color='white', heatmap_cmap='jet', 
-                                  edge_weights=None):
+def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enhanced RISE Map",
+                                  edge_method='combined', edge_alpha=0.7, heatmap_alpha=0.6,
+                                  edge_color='white', heatmap_cmap='jet', edge_weights=None):
     """
     Create visualization overlaying RISE heatmaps with edge detection maps to show
     if the model focuses on brushstroke patterns.
@@ -412,7 +403,9 @@ def visualize_edge_heatmap_overlay(image, heatmap, output_path, title="Edge-Enha
     
     # Create an edge overlay that only shows edges in regions highlighted by the heatmap
     heatmap_norm = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-10)
-    heatmap_threshold = 0.5  # Only show edges in regions with significant relevance
+    
+    # Only show edges in regions with significant relevance
+    heatmap_threshold = 0.5 
     combined_mask = edge_mask & (heatmap_norm > heatmap_threshold)
     
     # Convert mask to RGB for overlay
@@ -537,25 +530,25 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
     # Load all relevance maps
     all_relevances = []
     for file in relevances_files:
-        data = np.load(file, allow_pickle=True)
-        # Check if 'relevances' is already a dict or if it's a numpy array
-        if isinstance(data['relevances'], dict):
-            all_relevances.append(data['relevances'])
-        else:
-            # Try to convert to dict if it's a numpy array with .item() method
-            try:
-                all_relevances.append(data['relevances'].item())
-            except (AttributeError, ValueError):
-                print(f"Warning: Could not convert relevances from {file} to dictionary")
-                continue
+        try:
+            data = np.load(file, allow_pickle=True)
+            # Check if 'relevances' is already a dict or if it's a numpy array
+            if isinstance(data['relevances'], dict):
+                all_relevances.append(data['relevances'])
+            else:
+                # Try to convert to dict if it's a numpy array with .item() method
+                try:
+                    all_relevances.append(data['relevances'].item())
+                except (AttributeError, ValueError):
+                    print(f"Could not convert relevances from {file.name}")
+                    continue
+        except Exception as e:
+            print(f"Error loading {file.name}: {str(e)}")
     
-    # Process each class separately
-    # First, identify all class indices across all runs
+    # Process each class separately: First, identify all class indices across all runs
     all_classes = set()
     for relevance_map in all_relevances:
         all_classes.update(relevance_map.keys())
-    
-    print(f"Found classes: {all_classes}")
     
     # Process each class
     mean_relevances = {}
@@ -577,8 +570,7 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
             mean_relevances[class_idx] = np.mean(stacked_class, axis=0)
             std_relevances[class_idx] = np.std(stacked_class, axis=0)
         except Exception as e:
-            print(f"Error processing class {class_idx}: {e}")
-            print(f"Shapes: {[r.shape for r in class_relevances]}")
+            print(f"Error processing class {class_idx}: {str(e)}")
     
     # Save the integrated results
     output_base = output_dir / base_pattern
@@ -586,11 +578,10 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                         mean=mean_relevances, 
                         std=std_relevances)
     
-    print(f"Integrated results saved to {str(output_base)}_integrated.npz")
+    print(f"Saved integrated results to {output_base}_integrated.npz")
     
     # Load the original image for visualization
     try:        
-        
         # Load original image
         x = io.imread(str(image_path))
         
@@ -606,13 +597,12 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
         target_size = max(orig_height, orig_width)
         start_h = (target_size - orig_height) // 2
         start_w = (target_size - orig_width) // 2
-        
-        #print(f"Original image dimensions: {orig_height}x{orig_width}")
-        #print(f"Padded square dimensions: {target_size}x{target_size}")
-        #print(f"Padding: top={start_h}, left={start_w}")
             
         # Make sure we have classes 0 and 1 (Raphael and non-Raphael)
         if 0 in mean_relevances and 1 in mean_relevances:
+            # Create directory for visualizations
+            (output_dir / "visualizations").mkdir(exist_ok=True)
+            
             # 1. Create visualizations for mean relevance maps
             for class_idx in [0, 1]:  # 0=Raphael, 1=Non-Raphael
                 mean_map = mean_relevances[class_idx][0]  # Get first batch item
@@ -624,9 +614,6 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                     elif len(mean_map.shape) == 3:  # Handle 3D case with channels
                         mean_map = mean_map[start_h:start_h + orig_height, start_w:start_w + orig_width, :]
                 
-                # Create directory for visualizations
-                (output_dir / "visualizations").mkdir(exist_ok=True)
-                
                 # Use DIANNA visualization for individual maps
                 try:
                     visualization.plot_image(
@@ -634,8 +621,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                         output_filename=str(output_dir / "visualizations" / f"{base_pattern}_mean_{class_name(class_idx)}.png"),
                         show_plot=False
                     )
+                    print(f"Created mean visualization for {class_name(class_idx)}")
                 except Exception as e:
-                    print(f"Warning: Could not create visualization for {class_name(class_idx)}: {e}")
+                    print(f"Could not create visualization for {class_name(class_idx)}")
                 
                 # Visualize standard deviation (uncertainty) maps
                 std_map = std_relevances[class_idx][0]  # Get first batch item
@@ -653,8 +641,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                         output_filename=str(output_dir / "visualizations" / f"{base_pattern}_std_{class_name(class_idx)}.png"),
                         show_plot=False
                     )
+                    print(f"Created standard deviation visualization for {class_name(class_idx)}")
                 except Exception as e:
-                    print(f"Warning: Could not create standard deviation visualization for {class_name(class_idx)}: {e}")
+                    print(f"Could not create standard deviation visualization for {class_name(class_idx)}")
                 
                 # Create confidence maps (mean * (1 - normalized std))
                 # High confidence = high relevance AND low variability
@@ -666,8 +655,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                         output_filename=str(output_dir / "visualizations" / f"{base_pattern}_confidence_{class_name(class_idx)}.png"),
                         show_plot=False
                     )
+                    print(f"Created confidence visualization for {class_name(class_idx)}")
                 except Exception as e:
-                    print(f"Warning: Could not create confidence visualization for {class_name(class_idx)}: {e}")
+                    print(f"Could not create confidence visualization for {class_name(class_idx)}")
             
             # 2. Create a difference map (Raphael - Non-Raphael)
             try:
@@ -691,11 +681,11 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                 plt.tight_layout()
                 plt.savefig(str(output_dir / "visualizations" / f"{base_pattern}_difference_map.png"), dpi=300)
                 plt.close()
+                print("Created difference map visualization")
             except Exception as e:
-                print(f"Warning: Could not create difference map: {e}")
+                print(f"Could not create difference map")
             
-            # 3. Calculate integrated metrics across runs
-            # First collect all metrics from individual runs
+            # 3. Calculate integrated metrics across runs. First collect all metrics from individual runs
             all_metrics = []
             metrics_files = list(Path("output").glob(f"{base_pattern}_*_metrics.csv"))
             for file in metrics_files:
@@ -703,7 +693,7 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                     metrics_df = pd.read_csv(file)
                     all_metrics.append(metrics_df)
                 except Exception as e:
-                    print(f"Error reading metrics from {file}: {e}")
+                    print(f"Error reading metrics from {file.name}")
                     
             if all_metrics:
                 # Concatenate all metrics and calculate mean, std
@@ -748,10 +738,10 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                     else:
                         print("- HIGH CORRELATION: The model focuses on similar regions, possibly indicating poor discrimination")
                 except Exception as e:
-                    print(f"Error calculating aggregated metrics: {e}")
+                    print(f"Error calculating aggregated metrics")
         
         else:
-            print(f"Warning: Expected to find classes 0 and 1 in results, but found {all_classes}")
+            print(f"Warning: Expected to find classes 0 and 1 in results, but found {list(mean_relevances.keys())}")
             
         # After creating difference map, add edge-enhanced visualizations
         try:
@@ -791,9 +781,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                             edge_method=edge_method,
                             edge_weights=edge_weights
                         )
-                        print(f"Created edge-enhanced visualization using {edge_method} for {class_name(class_idx)}")
+                        print(f"Created edge-enhanced visualization for {class_name(class_idx)}")
                     except Exception as edge_err:
-                        print(f"Error creating {edge_method} visualization for {class_name(class_idx)}: {edge_err}")
+                        print(f"Could not create edge-enhanced visualization for {class_name(class_idx)}")
                 
                 # Also create an edge-enhanced visualization for the confidence map
                 if class_idx in std_relevances:
@@ -821,9 +811,9 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                             edge_method='combined',
                             edge_weights=edge_weights
                         )
-                        print(f"Created edge-enhanced confidence map with combined edges for {class_name(class_idx)}")
+                        print(f"Created edge-enhanced confidence map for {class_name(class_idx)}")
                     except Exception as e:
-                        print(f"Error creating edge-enhanced confidence map for {class_name(class_idx)}: {e}")
+                        print(f"Could not create edge-enhanced confidence map for {class_name(class_idx)}")
                     
             # Create edge-enhanced difference map with various edge detection methods
             if 0 in mean_relevances and 1 in mean_relevances:
@@ -846,11 +836,11 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                         output_path=output_path,
                         title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns",
                         edge_method='sobel',
-                        heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
+                        heatmap_cmap='RdBu_r'
                     )
                     print("Created edge-enhanced difference map with Sobel edges")
                 except Exception as e:
-                    print(f"Error creating edge-enhanced difference map with Sobel edges: {e}")
+                    print("Could not create edge-enhanced difference map with Sobel edges")
                 
                 # Now create the combined edge version of the difference map
                 try:
@@ -863,45 +853,47 @@ def integrate_results(image_path, n_masks, p_keep, feature_res, runs=3):
                         title="Raphael vs Non-Raphael: Distinctive Brushstroke Patterns (Combined Edge Analysis)",
                         edge_method='combined',
                         edge_weights=edge_weights,
-                        heatmap_cmap='RdBu_r'  # Use RdBu for difference maps
+                        heatmap_cmap='RdBu_r'
                     )
                     print("Created edge-enhanced difference map with combined edges")
                 except Exception as e:
-                    print(f"Error creating edge-enhanced difference map with combined edges: {e}")
+                    print("Could not create edge-enhanced difference map with combined edges")
         
         except Exception as e:
-            print(f"Error creating edge-enhanced visualizations: {e}")
-            import traceback
-            traceback.print_exc()
+            print("Error creating edge-enhanced visualizations")
         
     except Exception as e:
-        print(f"Error creating visualizations: {e}")
-        import traceback
-        traceback.print_exc()
+        print("Error creating visualizations")
+        
+    print(f"Integration complete for {image_path.name}")
 
 
 if __name__ == "__main__":
     
-    # set to True to test. If correct, set to false asnd run real analysis
+    # set to True to test. If correct, set to false and run real analysis
     is_classification_run = False
     
     # Verify data paths exist
     painting_paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
+    all_paths_exist = True
     for path in painting_paths:
         if not path.exists():
             print(f"WARNING: Image file {path} does not exist. Please check the path.")
-            exit(1)
+            all_paths_exist = False
             
     # Check Non-Raphael directory exists
     if not Path('data/Not Raphael').exists():
         print(f"WARNING: Directory 'data/Not Raphael' does not exist. Please check the path.")
+        all_paths_exist = False
+    
+    if not all_paths_exist:
+        print("Exiting due to missing files.")
         exit(1)
     
     if is_classification_run:
-        paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
+        paths = painting_paths
         
-        results = []
-        
+        results = []        
         for path in paths:
             model = Model()
             
@@ -910,29 +902,34 @@ if __name__ == "__main__":
             result = model.run_on_batch(img)
             results.append(result)
 
-        for path, result in zip(paths, results):
-            print(f'{result=}')
-            print(f'{path=}')
-            print(pd.DataFrame([result], columns=[class_name(idx) for idx in [0, 1]]))
+        # Create a simple table of results
+        result_df = pd.DataFrame(results, columns=[class_name(idx) for idx in [0, 1]])
+        result_df.index = [p.name for p in paths]
+        print("Classification Results:")
+        print(result_df)
 
-    else:
-        painting_paths = [Path(p) for p in ['data/0_Edinburgh_Nat_Gallery.jpg']]
+    else:        
+        n_masks = 5  # Reduced from 50 for faster processing
+        p_keep = 0.3
+        feature_res = 6
+        
+        print(f"Starting RISE analysis with {n_masks} masks...")
         
         for painting_path in painting_paths:
-            for n_masks in [50]:  # Using 500 masks for more stable results
-                for p_keep in [0.3]: # 0.3 means 30% of the pixels are masked, 
-                    #which is a good balance between stability and sensitivity                    
-                    for feature_res in [6]: # 10 means 10x10 pixel groups are masked at a time
-                        for run in range(3): # 5 runs are used to get a more stable result
-                            print(f'Running {run} of {painting_path} with {n_masks} masks, {p_keep} keep ratio, and {feature_res} feature resolution')
-                            # heatmaps for the painting indicating the relevance of each pixel for the prediction
-                            explain_painting(n_masks            = n_masks,
-                                             p_keep             = p_keep,
-                                             feature_res        = feature_res,
-                                             file_name_appendix = str(run),
-                                             image_path         = painting_path)
+            print(f"\nProcessing: {painting_path.name}")
+            
+            for run in range(3): # Run 3 iterations for stability
+                print(f"Run {run+1}/3")
+                # Get heatmaps for the painting indicating the relevance of each pixel for the prediction
+                explain_painting(n_masks            = n_masks,
+                                 p_keep             = p_keep,
+                                 feature_res        = feature_res,
+                                 file_name_appendix = str(run),
+                                 image_path         = painting_path)
 
         # After running all the individual analyses
         for painting_path in painting_paths:
-            print(f"Integrating results for {painting_path}")
-            integrate_results(image_path=painting_path, n_masks=50, p_keep=0.3, feature_res=6, runs=3)
+            print(f"\nIntegrating results for {painting_path.name}")
+            integrate_results(image_path=painting_path, n_masks=n_masks, p_keep=p_keep, feature_res=feature_res, runs=3)
+        
+        print("\nAnalysis complete. Results saved to the 'output' directory.")
