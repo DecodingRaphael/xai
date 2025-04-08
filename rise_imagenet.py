@@ -32,7 +32,8 @@ Parameters:
     model_fn (callable): The model function to obtain predictions.
     image (np.ndarray): The input image in (1, 1, h, w) format.
     n_masks (int, optional): Number of random masks to generate. Default is 50.
-    p_keep (float, optional): Probability of keeping a pixel in the mask. Default is 0.3.
+    p_keep (float, optional): Probability of keeping a pixel in the mask. 
+    Default is 0.3.
     feature_res (int, optional): Resolution for the low-res mask. Default is 6.
 
 Returns:
@@ -45,16 +46,17 @@ Returns:
     
     # Generate random masks
     masks = []
-    cell_size = min(h, w) // feature_res       
+    #cell_size = min(h, w) // feature_res       
     
     # Generate random masks
     for _ in range(n_masks):
         # Create a low-res binary mask
         mask_low_res = np.random.binomial(1, p_keep, size=(feature_res, feature_res))
         
-        # Upsample to image size using skimage's transform.resize with nearest neighbor interpolation
-        # order=0 specifies nearest-neighbor interpolation
-        mask = transform.resize(mask_low_res, (h, w), order=0, mode='constant', preserve_range=True).astype(mask_low_res.dtype)
+        # Upsample to image size using skimage's transform.resize with nearest
+        # neighbor interpolation order=0 specifies nearest-neighbor interpolation
+        mask = transform.resize(mask_low_res, (h, w), order=0, mode='constant', 
+                                preserve_range=True).astype(mask_low_res.dtype)
         
         # Reshape to match image format for DIANNA
         mask = np.expand_dims(np.expand_dims(mask, axis=0), axis=0)  # (1, 1, h, w)
@@ -121,7 +123,7 @@ def explain_painting(
         file_name_appendix: Optional[str] = None,
 ):
     model = Model()
-    labels = [0, 1]  # Raphael and Non-Raphael classes    
+    labels = [0, 1]
     file_name_base = create_file_name_base(feature_res, file_name_appendix, image_path, n_masks, p_keep)
         
     x = io.imread(str(image_path))
@@ -152,10 +154,10 @@ def explain_painting(
     x_resized[start_h:start_h + x_gray.shape[0], start_w:start_w + x_gray.shape[1]] = x_gray
         
     # Add batch dimension: shape (1, height, height)
-    x_input = np.expand_dims(x_resized, axis=0)  
+    x_input = np.expand_dims(x_resized, axis=0)
         
     # Add channel dimension to match mask shape: shape (1, height, height, 1)
-    x_input = np.expand_dims(x_input, axis=-1)  
+    x_input = np.expand_dims(x_input, axis=-1)
         
     # Process image for our custom RISE implementation, which expects (batch, channels, height, width)
     x_rise = np.transpose(x_input, (0, 3, 1, 2))  # Move channel dim to position 1
@@ -170,10 +172,10 @@ def explain_painting(
             pred = pred.reshape(1, -1)
         return pred
     
-    # Run custom RISE implementation instead of DIANNA
+    # Run custom RISE implementation
     print(f"Generating relevance maps with {n_masks} masks...")
-    relevances = custom_rise(model_wrapper, x_rise,
-                             n_masks=n_masks, feature_res=feature_res, p_keep=p_keep        
+    relevances = custom_rise(model_wrapper, x_rise,n_masks=n_masks, 
+                             feature_res=feature_res, p_keep=p_keep        
     )
 
     # Visualize the relevance scores for the predicted class on top of the input image
@@ -895,10 +897,10 @@ if __name__ == "__main__":
         
         results = []        
         for path in paths:
-            model = Model()
+            model = Model()            
             
-            # Load image with scikit-image for consistent format
             img = io.imread(str(path))
+            
             result = model.run_on_batch(img)
             results.append(result)
 
@@ -909,7 +911,7 @@ if __name__ == "__main__":
         print(result_df)
 
     else:        
-        n_masks = 5  # Reduced from 50 for faster processing
+        n_masks = 5
         p_keep = 0.3
         feature_res = 6
         

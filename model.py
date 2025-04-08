@@ -13,9 +13,9 @@ from diskcache import Cache
 from skimage import io, color, feature, filters
 from tqdm import tqdm
 
-# Suppress tensorflow warnings
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow INFO and WARNING messages
-logging.getLogger('tensorflow').setLevel(logging.ERROR)  # Only show ERROR messages
+# Suppress tensorflow warnings and only show error messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)  
 warnings.filterwarnings('ignore', category=UserWarning)
 
 class Model:
@@ -28,10 +28,9 @@ class Model:
             raise RuntimeError(f"ResNet model is required but could not be loaded: {str(e)}")
 
     def extract_features(self, img):
-        if self.resnet_model is not None:
-            # Preprocess input for ResNet model
-            img_preprocessed = keras.applications.resnet50.preprocess_input(img)
-            return self.resnet_model.predict(img_preprocessed, verbose=0)
+        if self.resnet_model is not None:            
+            preprocess_input = keras.applications.resnet50.preprocess_input(img)
+            return self.resnet_model.predict(preprocess_input, verbose=0)
         return None
 
     def run_on_batch(self, input):
@@ -49,7 +48,7 @@ class Model:
         if input is None or input.shape[0] == 0:
             raise ValueError("Input cannot be None or empty batch")
             
-        # Create a deep copy of the input to avoid modifying the original
+        # Avoid modifying the original
         input_copy = input.copy()
         
         # Handle potential input in format [batch, channels, height, width]
@@ -126,8 +125,7 @@ def extract_features(img_path, model):
     # Use the model's preprocessing if available
     if model is not None:
         try:
-            img = keras.applications.resnet50.preprocess_input(img)
-            # Use verbose=0 to suppress progress bar output
+            img = keras.applications.resnet50.preprocess_input(img)            
             features = model.predict(img)
             return features
         except Exception:
@@ -135,7 +133,8 @@ def extract_features(img_path, model):
     return None
 
 
-# Helper function to convert any image format to 2D grayscale
+# Helper function to convert any image format to 2D grayscale,
+# because the model expects a 2D grayscale image
 def _convert_to_grayscale(img):
     # Convert to grayscale if the image is in color
     if len(img.shape) > 2:
@@ -163,46 +162,31 @@ def _convert_to_grayscale(img):
 def calculate_canny_edges(img):
     # Convert to grayscale
     gray = _convert_to_grayscale(img)
-    
-    # Apply Canny edge detection using scikit-image
     edges = feature.canny(gray, sigma=1.0)
-    
-    # Return standard deviation of edge image
-    return np.std(edges)
+    return np.std(edges) # Return standard deviation of edge image
 
 
 # Function to calculate edge features using Sobel operator
 def calculate_sobel_edges(img):
     # Convert to grayscale
-    gray = _convert_to_grayscale(img)
-    
-    # Apply Sobel filter using scikit-image
+    gray = _convert_to_grayscale(img)    
     sobelx = filters.sobel_h(gray)
-    sobely = filters.sobel_v(gray)
-    
+    sobely = filters.sobel_v(gray)    
     return np.std(sobelx), np.std(sobely)
 
 
 # Function to calculate edge features using Laplacian operator
-def calculate_laplacian_edges(img):
-    # Convert to grayscale
-    gray = _convert_to_grayscale(img)
-    
-    # Apply Laplacian filter using scikit-image
-    laplacian = filters.laplace(gray)
-    
+def calculate_laplacian_edges(img):    
+    gray = _convert_to_grayscale(img)    
+    laplacian = filters.laplace(gray)    
     return np.std(laplacian)
 
 
 # Function to calculate edge features using Scharr operator
-def calculate_scharr_edges(img):
-    # Convert to grayscale
-    gray = _convert_to_grayscale(img)
-    
-    # Apply Scharr filter using scikit-image
+def calculate_scharr_edges(img):    
+    gray = _convert_to_grayscale(img)    
     scharrx = filters.scharr_h(gray)
-    scharry = filters.scharr_v(gray)
-    
+    scharry = filters.scharr_v(gray)    
     return np.std(scharrx), np.std(scharry)
 
 
@@ -221,11 +205,12 @@ def calculate_features(img):
 
 def compare_image_with_dataset(test_image_path, image_dir):
     resnet50_path: Path = Path("models/resnet50_model.h5")
-    model_path: Path = Path("models/28_09_2023_svm_final_model.pkl")    
+    model_path: Path = Path("models/28_09_2023_svm_final_model.pkl")
     Model_Path = model_path
     ResNet_Path = resnet50_path
 
-    # Use the provided image array directly; it's already a numpy array
+    # Load test image. Use the provided image array directly since it's 
+    # already a numpy array
     test_image = test_image_path
     
     # Ensure image is in correct format for feature calculation
@@ -246,10 +231,9 @@ def compare_image_with_dataset(test_image_path, image_dir):
         print(f"Warning: SVM model not found at {Model_Path}")
         raise RuntimeError("SVM model is required but could not be loaded")
 
-    # Load the ResNet model
+    # Load the saved model
     try:
-        try:
-            # Try the newer import pattern
+        try:            
             model = keras.models.load_model(ResNet_Path, compile=False)
         except Exception:
             # Fall back to direct models import
@@ -273,12 +257,12 @@ def compare_image_with_dataset(test_image_path, image_dir):
         test_image_features = test_image_features.reshape(-1)
 
     # Use the loaded model to predict the category of the test image
-    #predicted_category = svm_final.predict([test_image_features])[0]
+    predicted_category = svm_final.predict([test_image_features])[0]
 
     # Calculate probabilities for each category
     probabilities = svm_final.predict_proba([test_image_features])[0]
 
-    #categories = ['Raphael', 'Not Raphael']
+    categories = ['Raphael', 'Not Raphael']
 
     # Calculate features of test image
     test_features = calculate_features(test_image)
@@ -337,10 +321,8 @@ def compare_image_with_dataset(test_image_path, image_dir):
     # Format percentages for clean display
     raphael_pct = final_probabilities[0] * 100
     non_raphael_pct = final_probabilities[1] * 100
-    
-    # Display simple prediction result as percentages
-    print(f"Prediction: Raphael: {raphael_pct:.1f}%, Non-Raphael: {non_raphael_pct:.1f}%")
-    
+        
+    print(f"Prediction: Raphael: {raphael_pct:.1f}%, Non-Raphael: {non_raphael_pct:.1f}%")    
     return final_probabilities
 
 
