@@ -36,18 +36,30 @@ Our project builds on this foundation by applying explainable AI (XAI) technique
 
 2. Install dependencies:
    ```bash
+   # For production use
    pip install -r requirements.txt
+
+   # For development and testing
+   pip install -r requirements.txt -r tests/requirements-test.txt
    ```
 
    Key dependencies:
    - tensorflow
+   - keras
    - numpy
    - pandas
-   - opencv-python
-   - scikit-image
+   - scikit-image (includes Pillow dependencies)
    - matplotlib
    - joblib
    - diskcache
+   - scipy
+   - tqdm
+
+   Development and testing dependencies:
+   - pytest
+   - pytest-cov
+   - mock
+   - opencv-python (for tests)
 
 3. Data organization (go to [Github](https://github.com/ugail/RaphaelHeritageSciencePaper) for download options):
    - Place Raphael paintings in `data/Raphael/`
