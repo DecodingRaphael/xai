@@ -1,0 +1,14 @@
+typing
+pandas
+numpy
+pathlib
+joblib
+opencv-python
+Pillow
+matplotlib
+tensorflow
+diskcache
+torchtext
+scikit-image
+scipy
+tqdm
