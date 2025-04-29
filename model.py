@@ -1,40 +1,93 @@
+import glob
+import logging
+import math
+import os
+import warnings
 from pathlib import Path
 
 import joblib
-from tensorflow.keras.models import load_model
+import keras
+from keras import models
 import numpy as np
-from tensorflow.keras.applications.resnet50 import preprocess_input as resnet50_preprocess_input
-from keras import backend as K
-import cv2
-import numpy as np
-import glob
-import joblib
-import pandas as pd
-from PIL import Image
-import matplotlib.pyplot as plt
-from tensorflow.keras.preprocessing import image as keras_image
-from tensorflow.keras.applications.resnet50 import preprocess_input
-from tensorflow.keras.models import load_model
-import math
 from diskcache import Cache
+from skimage import io, color, feature, filters
+from tqdm import tqdm
 
+# Suppress tensorflow warnings and only show error messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+warnings.filterwarnings('ignore', category=UserWarning)
 
 class Model:
     def __init__(self):
-        pass
+        self.resnet_model = models.load_model("models/resnet50_model.h5", compile=False)
 
     def extract_features(self, img):
-        preprocess_input = resnet50_preprocess_input(img)
-        return self.resnet_model.predict(preprocess_input)
+        preprocess_input = keras.applications.resnet50.preprocess_input(img)
+        return self.resnet_model.predict(preprocess_input, verbose=0)
 
-    def run_on_batch(self, x):
-        predictions = compare_image_with_dataset(x, '../data/Not Rapheal/')
-        return np.array(predictions)
+    def run_on_batch(self, input):
+        """
+        Run the model on a batch of input images.
+
+        Args:
+            input: Input images in the format [batch, height, width, channels]
+                or a single image as [height, width, channels]
+                or a file path
+
+        Returns:
+            A numpy array of probabilities for each image in the batch with
+            shape [batch_size, num_classes]
+        """
+
+        # Handle file path inputs
+        if isinstance(input, (str, Path)):
+            img = io.imread(str(input))
+            img, _ = preprocess_image(img, normalize=True, ensure_rgb=True)
+            # For file paths, return direct probabilities to match test expectations
+            return compare_image_with_dataset(img, 'data/Not Raphael/')
+
+        # Create a copy to avoid modifying the original
+        input_copy = input.copy()
+
+        # For single images, add batch dimension
+        if len(input_copy.shape) == 2 or (len(input_copy.shape) == 3 and input_copy.shape[2] in [1, 3, 4]):
+            input_copy = np.expand_dims(input_copy, axis=0)
+
+        # Ensure we have at least one image in the batch
+        if input_copy.shape[0] == 0:
+            raise ValueError("Empty batch provided")
+
+        # Process each image in the batch using our standardized preprocessing
+        processed_batch = []
+        for i in range(input_copy.shape[0]):
+            # Get one image and ensure it's in RGB format (ResNet needs RGB)
+            img, _ = preprocess_image(input_copy[i], normalize=True, ensure_rgb=True)
+            processed_batch.append(img)
+
+        # Stack back into a batch
+        processed_batch = np.stack(processed_batch)
+
+        # Process each image in the batch
+        results = []
+
+        for img in tqdm(processed_batch, desc="Analyzing images", leave=False):
+            # Compare with the dataset - use the correct path to Not Raphael folder
+            predictions = compare_image_with_dataset(img, 'data/Not Raphael/')
+            results.append(predictions)
+
+        # Convert results to numpy array
+        results = np.array(results)
+
+        # Ensure the output is 2D with shape [batch_size, num_classes]
+        if len(results.shape) == 1:
+            results = results.reshape(1, -1)
+
+        return results
 
 
 
-cache = Cache('./my_cache_directory')
-
+cache = Cache('my_cache_directory')
 
 def scale_inverse_log(x, x_min, x_max, y_min, y_max):
     # Check input boundaries
@@ -54,24 +107,93 @@ def scale_inverse_log(x, x_min, x_max, y_min, y_max):
     return y
 
 
-# Function to load and preprocess image
-def load_and_preprocess_image(img_path):
-    img = keras_image.load_img(img_path, target_size=(224, 224))
-    img = keras_image.img_to_array(img)
-    img = np.expand_dims(img, axis=0)
-    return preprocess_input(img)
+def preprocess_image(img, normalize=True, ensure_rgb=False):
+    """
+    Standardized image preprocessing function.
 
+    Args:
+        img: Input image in various formats
+        normalize: Whether to normalize to [0,1] range
+        ensure_rgb: Whether to convert grayscale to RGB
+
+    Returns:
+        Processed image in the desired format
+    """
+    # Handle both file paths and numpy arrays
+    if isinstance(img, (str, Path)):
+        img = io.imread(str(img))
+
+    # Handle batched images - take the first one if single image needed
+    if len(img.shape) == 4:
+        # For feature calculation, use single image
+        single_img = img[0]
+    else:
+        single_img = img
+
+    # Convert to grayscale if needed for edge detection
+    if len(single_img.shape) == 3 and single_img.shape[2] > 1:
+        gray = color.rgb2gray(single_img)
+    else:
+        # Handle grayscale with extra dimensions or already 2D
+        gray = np.squeeze(single_img)
+
+    # Ensure we have RGB if requested (for ResNet)
+    if ensure_rgb:
+        if len(single_img.shape) == 2:
+            # Add channel dimension if missing
+            single_img = np.expand_dims(single_img, axis=-1)
+
+        if single_img.shape[-1] == 1:
+            # Convert single channel to RGB
+            single_img = np.repeat(single_img, 3, axis=-1)
+
+    # Normalize if requested
+    if normalize and single_img.max() > 1.0:
+        single_img = single_img / 255.0
+
+    return single_img, gray
 
 def extract_features(img_path, model):
-    img = load_and_preprocess_image(img_path)
-    features = model.predict(img)
-    return features.reshape(-1)
+    """
+    Extract features from an image using the provided model.
 
+    Args:
+        img_path: Path to an image or an image array
+        model: The model to use for feature extraction
+
+    Returns:
+        Feature vector extracted from the image
+    """
+    # Get the processed image
+    img, _ = preprocess_image(img_path, normalize=False, ensure_rgb=True)
+
+    # Add batch dimension if missing
+    if len(img.shape) == 3:
+        img = np.expand_dims(img, axis=0)
+
+    # Prepare for ResNet50
+    if img.dtype == np.uint8:
+        # Already in [0,255] range, no change needed
+        pass
+    elif img.max() <= 1.0:
+        # Convert from [0,1] to [0,255] for preprocessing
+        img = (img * 255).astype(np.uint8)
+
+    # Use the model's preprocessing if available
+    if model is not None:
+        try:
+            img = keras.applications.resnet50.preprocess_input(img)
+            features = model.predict(img, verbose=0)
+            return features
+        except Exception as e:
+            print(f"Feature extraction error: {str(e)}")
+            return None
+    return None
 
 # Function to calculate edge features using Canny edge detector
 def calculate_canny_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 100, 200)
+    _, gray = preprocess_image(img)
+    edges = feature.canny(gray, sigma=1.0)
 
     # Once the edge features are computed, the standard deviation is calculated for
     # every individual edge feature obtained from an image. The standard deviation serves as
@@ -81,24 +203,24 @@ def calculate_canny_edges(img):
 
 # Function to calculate edge features using Sobel operator
 def calculate_sobel_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
-    sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=5)
+    _, gray = preprocess_image(img)
+    sobelx = filters.sobel_h(gray)
+    sobely = filters.sobel_v(gray)
     return np.std(sobelx), np.std(sobely)
 
 
 # Function to calculate edge features using Laplacian operator
 def calculate_laplacian_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    _, gray = preprocess_image(img)
+    laplacian = filters.laplace(gray)
     return np.std(laplacian)
 
 
 # Function to calculate edge features using Scharr operator
 def calculate_scharr_edges(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    scharrx = cv2.Scharr(gray, cv2.CV_64F, 1, 0)
-    scharry = cv2.Scharr(gray, cv2.CV_64F, 0, 1)
+    _, gray = preprocess_image(img)
+    scharrx = filters.scharr_h(gray)
+    scharry = filters.scharr_v(gray)
     return np.std(scharrx), np.std(scharry)
 
 
@@ -115,24 +237,33 @@ def calculate_features(img):
                      scharr_edges_x, scharr_edges_y])
 
 
-def compare_image_with_dataset(test_image_path, image_dir):
-    resnet50_path: Path = Path("../data/resnet50_model.h5")
-    model_path: Path = Path("../data/28_09_2023_svm_final_model.pkl")
-    Model_Path = model_path
-    ResNet_Path = resnet50_path
+def compare_image_with_dataset(test_image, image_dir):
+    """
+    Compare an image with a dataset of reference images to determine if it's a Raphael.
 
+    Args:
+        test_image: The image to test
+        image_dir: Directory containing reference (non-Raphael) images
 
-    # Load test image
-    test_image = cv2.imread(str(test_image_path))
+    Returns:
+        List of probabilities [Raphael, Non-Raphael]
+    """
+
+    resnet_path = Path("models/resnet50_model.h5")
+    svm_path = Path("models/28_09_2023_svm_final_model.pkl")
 
     # Load the final model
-    svm_final = joblib.load(Model_Path)
+    svm_final = joblib.load(svm_path)
 
     # Load the saved model
-    model = load_model(ResNet_Path)
+    resnet_model = keras.models.load_model(resnet_path, compile=False)
 
     # Extract features from the test image
-    test_image_features = extract_features(test_image_path, model)
+    test_image_features = extract_features(test_image, resnet_model)
+
+    # Flatten features if needed
+    if len(test_image_features.shape) > 1:
+        test_image_features =  test_image_features.reshape(-1)
 
     # Use the loaded model to predict the category of the test image
     predicted_category = svm_final.predict([test_image_features])[0]
@@ -160,7 +291,7 @@ def compare_image_with_dataset(test_image_path, image_dir):
     total_features = np.zeros_like(test_features)
     image_count = 0
 
-    for image_path in image_paths:
+    for image_path in tqdm(image_paths, desc="Analyzing reference images", leave=False):
         # Load image
         image_features = load_image_and_calculate_features(image_path)
 
@@ -177,13 +308,14 @@ def compare_image_with_dataset(test_image_path, image_dir):
     # Sum of differences
     mean_diff = np.mean(difference)
 
-    if mean_diff < 50:
+    # Apply adjustment algorithm
+    if mean_diff < 99:
         mean_diff = 400
-        probabilities[0] = probabilities[0] - 0.3
+        probabilities[0] -= 0.5
 
     if mean_diff > 400:
         mean_diff = 400
-        probabilities[0] = probabilities[0] - 0.3
+        probabilities[0] -= 0.5
 
     if mean_diff < 150:
         mean_diff = 150
@@ -196,15 +328,17 @@ def compare_image_with_dataset(test_image_path, image_dir):
 
     final_probabilities = [threshold, 1 - threshold]
 
-    print(test_image_path)
-    print(pd.DataFrame([['probabilities'] + list(probabilities), ['final'] + list(final_probabilities)],
-                       columns=['type'] + categories))
+    # Display prediction
+    raphael_pct = final_probabilities[0] * 100
+    non_raphael_pct = final_probabilities[1] * 100
+    print(f"Prediction: Raphael: {raphael_pct:.1f}%, Non-Raphael: {non_raphael_pct:.1f}%")
+
     return final_probabilities
 
 
 @cache.memoize()
 def load_image_and_calculate_features(image_path):
-    image = cv2.imread(image_path)
+    image = io.imread(image_path)
     # Calculate features of image
     image_features = calculate_features(image)
     return image_features

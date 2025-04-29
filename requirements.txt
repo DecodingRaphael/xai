@@ -1,0 +1,14 @@
+pandas
+numpy
+pathlib
+joblib
+matplotlib
+tensorflow
+keras>=2.5.0
+diskcache
+scikit-image
+scipy
+tqdm
+typing-extensions
+setuptools
+ruff
